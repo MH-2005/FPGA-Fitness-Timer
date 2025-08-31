@@ -15,13 +15,15 @@
 // Dependencies: 
 //
 // Revision: 
-// Revision 1.03 - Fixed non-synthesizable modulo in LCDTextGenerator
+// Revision 2.00 - Final, Stable Version
 // Additional Comments: 
 //
-//  Logic Lab Project (Spring 1404) - REFACTORED & CORRECTED VERSION
+//  Logic Lab Project (Spring 1404) - FINAL CORRECTED VERSION
 //  TopModule - Fitness Workout Timer System
+//  - Fixed start button race condition for reliable one-press start.
+//  - Fixed LCD initialization timing for stable display.
+//  - Corrected all non-synthesizable operators (% and /).
 //  - Implemented 5-state FSM as per design documents.
-//  - Corrected buzzer logic to trigger only from FSM events.
 //  - Implemented different frequencies for normal and final beeps.
 // ==========================================================
 
@@ -127,8 +129,9 @@ module TopModule #(
         .total_exercises(total_exercises_preview)
     );
 
-    // Only start if calculated exercises > 0
+    // CORRECTED: Create a qualified start command to prevent race condition
     wire start_workout_cmd = start_btn_pressed & (total_exercises_preview != 9'd0);
+    wire start_idle_cmd    = start_btn_pressed & (total_exercises_preview == 9'd0);
 
     // Latch user inputs when workout starts
     reg [2:0] weight_latched;    
@@ -144,7 +147,7 @@ module TopModule #(
             gender_latched <= 1'b0; 
             total_exercises_latched <= 9'd0; 
         end
-        else if (start_btn_pressed) begin // Latch on any start press, cmd is for FSM
+        else if (start_btn_pressed) begin // Latch on any start press
             weight_latched <= W; 
             calorie_latched <= Cal; 
             met_latched <= MET; 
@@ -165,7 +168,9 @@ module TopModule #(
     ) fsm_unit (
         .reset(system_reset), 
         .skip_button(skip_btn_pressed), 
-        .start_button(start_btn_pressed), // Use raw button press here
+        // CORRECTED: Use the qualified start commands
+        .start_button_go(start_workout_cmd),
+        .start_button_idle(start_idle_cmd),
         .clk(clk_40MHz), 
         .tick_1Hz(tick_1Hz),
         .total_exercises(total_exercises_latched),
@@ -278,8 +283,6 @@ module TopModule #(
     );
 
     // ============ AUDIO FEEDBACK - CORRECTED ============
-    // CORRECTED: Triggers now come ONLY from the FSM state transitions.
-    // Buttons no longer directly trigger the buzzer.
     wire short_beep_trigger = beep_after_rest_pulse;
     wire long_beep_trigger  = workout_finished_pulse;
                                
@@ -341,26 +344,26 @@ module ExerciseCalculator(
 endmodule
 
 
-// ===================== Workout State Machine - 5-STATE FSM REVISED ==================
+// ===================== Workout State Machine - FINAL CORRECTED VERSION ==================
 module WorkoutStateMachine #(
     parameter [7:0] WORK_DURATION = 8'd45,
     parameter [7:0] REST_DURATION = 8'd15
 )(
     input reset, 
     input skip_button, 
-    input start_button, 
+    input start_button_go,      // Qualified start signal for workout > 0
+    input start_button_idle,    // Qualified start signal for workout = 0
     input clk, 
     input tick_1Hz,
     input  [8:0] total_exercises,
 
     output reg [8:0] current_exercise, 
     output reg [7:0] countdown_timer,
-    output reg beep_after_rest,   // Pulse signal for short beep
-    output reg workout_complete,  // Pulse signal for long beep
+    output reg beep_after_rest,
+    output reg workout_complete,
     output [2:0] state
 );
 
-    // 5-State FSM definition as per project documentation
     localparam [2:0] STATE_IDLE              = 3'b000;
     localparam [2:0] STATE_EXERCISING        = 3'b001;
     localparam [2:0] STATE_RESTING           = 3'b010;
@@ -371,7 +374,6 @@ module WorkoutStateMachine #(
     reg [7:0] work_counter; 
     reg [7:0] rest_counter;
     
-    // Sequential block for state transitions (runs at main clock speed)
     always @(posedge clk or posedge reset) begin
         if (reset)
             current_state <= STATE_IDLE;
@@ -379,26 +381,18 @@ module WorkoutStateMachine #(
             current_state <= next_state;
     end
     
-    // Sequential block for counters (updates based on state and 1Hz tick)
     always @(posedge clk or posedge reset) begin
         if (reset) begin
             work_counter <= WORK_DURATION;
             rest_counter <= REST_DURATION;
             current_exercise <= 9'd1;
         end else begin
-            // Decrement counters when in the correct state and a 1-second tick occurs
-            case(current_state)
-                STATE_EXERCISING: begin
-                    if (tick_1Hz && work_counter > 0)
-                        work_counter <= work_counter - 1;
-                end
-                STATE_RESTING: begin
-                    if (tick_1Hz && rest_counter > 0)
-                        rest_counter <= rest_counter - 1;
-                end
-            endcase
+            if(current_state == STATE_EXERCISING && tick_1Hz && work_counter > 0)
+                work_counter <= work_counter - 1;
+            
+            if(current_state == STATE_RESTING && tick_1Hz && rest_counter > 0)
+                rest_counter <= rest_counter - 1;
 
-            // Logic to reset counters and increment exercise count upon state changes
             if (next_state != current_state) begin
                 case (next_state)
                     STATE_IDLE: begin
@@ -408,22 +402,19 @@ module WorkoutStateMachine #(
                     end
                     STATE_EXERCISING: begin
                         work_counter <= WORK_DURATION;
+                        // Increment exercise number when coming from the beep state
+                        if (current_state == STATE_BEEP_AFTER_REST)
+                           current_exercise <= current_exercise + 1;
                     end
                     STATE_RESTING: begin
                         rest_counter <= REST_DURATION;
-                    end
-                    STATE_BEEP_AFTER_REST: begin
-                        if (current_exercise < total_exercises)
-                           current_exercise <= current_exercise + 1;
                     end
                 endcase
             end
         end
     end
 
-    // Combinational block for next state logic and outputs
     always @(*) begin
-        // Default assignments for combinational outputs
         next_state = current_state;
         beep_after_rest = 1'b0;
         workout_complete = 1'b0;
@@ -432,12 +423,10 @@ module WorkoutStateMachine #(
         case (current_state)
             STATE_IDLE: begin
                 countdown_timer = (total_exercises > 9'd99) ? 8'd99 : total_exercises[7:0];
-                if (start_button) begin
-                    if (total_exercises > 0)
-                        next_state = STATE_EXERCISING;
-                    else
-                        next_state = STATE_FINAL_BEEP;
-                end
+                if (start_button_go)
+                    next_state = STATE_EXERCISING;
+                else if (start_button_idle)
+                    next_state = STATE_FINAL_BEEP;
             end
 
             STATE_EXERCISING: begin
@@ -457,15 +446,15 @@ module WorkoutStateMachine #(
             end
             
             STATE_BEEP_AFTER_REST: begin
-                beep_after_rest = 1'b1; // Generate a single main-clock-cycle pulse
-                // This is a transitional state, it moves on immediately in the next clock cycle
+                countdown_timer = rest_counter; // Show 0 briefly
+                beep_after_rest = 1'b1;
                 next_state = STATE_EXERCISING;
             end
 
             STATE_FINAL_BEEP: begin
-                workout_complete = 1'b1; // Generate a single main-clock-cycle pulse
-                // This state holds until start or reset. A new start press transitions to IDLE.
-                if (start_button)
+                workout_complete = 1'b1;
+                // A new start press (for any workout value) will reset the system
+                if (start_button_go || start_button_idle)
                     next_state = STATE_IDLE;
             end
             
@@ -473,12 +462,12 @@ module WorkoutStateMachine #(
         endcase
     end
     
-    assign state = current_state; // Output the current state for display/debug
+    assign state = current_state;
 
 endmodule
 
 
-// ===================== LCD Text Generator - OPTIMIZED & FIXED ==================
+// ===================== LCD Text Generator ==================
 module LCDTextGenerator (
     input clk,
     input rst,
@@ -493,7 +482,7 @@ module LCDTextGenerator (
     input [8:0] total_exercises,
     input [8:0] current_exercise,
     input [7:0] countdown_time,
-    input [1:0] workout_state, // 2-bit state for display (Idle/Work/Rest)
+    input [1:0] workout_state, 
     output [127:0] line1_text,
     output [127:0] line2_text
 );
@@ -533,16 +522,15 @@ module LCDTextGenerator (
         input [8:0] bin_in;
         reg [3:0] d2, d1, d0;
         integer i;
-        reg [15:0] temp;
     begin
-        temp = bin_in;
         d2=0; d1=0; d0=0;
         for (i=0; i<9; i=i+1) begin
             if (d2 >= 5) d2 = d2 + 3;
             if (d1 >= 5) d1 = d1 + 3;
+            if (d0 >= 5) d0 = d0 + 3;
             d2 = {d2[2:0], d1[3]};
             d1 = {d1[2:0], d0[3]};
-            d0 = {d0[2:0], temp[8-i]};
+            d0 = {d0[2:0], bin_in[8-i]};
         end
         bin_to_bcd3 = {d2, d1, d0};
     end
@@ -607,10 +595,9 @@ module LCDTextGenerator (
     wire [15:0] current_ex_ascii = format_2digit_bcd(current_exercise[7:0]);
     wire [15:0] timer_ascii = format_2digit_bcd(countdown_time);
     
-    // CORRECTED: Replaced non-synthesizable modulo operator
     wire [8:0] ex_minus_1 = (current_exercise == 0) ? 9'd0 : (current_exercise - 1);
     wire [11:0] ex_bcd = bin_to_bcd3(ex_minus_1);
-    wire [3:0] name_index = ex_bcd[3:0]; // The 'ones' digit is the result of modulo 10
+    wire [3:0] name_index = ex_bcd[3:0];
     
     wire [127:0] current_exercise_name = get_exercise_name(name_index);
 
@@ -633,7 +620,7 @@ module LCDTextGenerator (
 endmodule
 
 
-// ===================== BCD to 7-Segment Converter (FIXED) ==================
+// ===================== BCD to 7-Segment Converter ==================
 module BCDToSevenSegment (
     input  [7:0] bcd_value,
     output reg [7:0] ones_segments,
@@ -643,11 +630,9 @@ module BCDToSevenSegment (
     reg [3:0] tens_digit;
     reg [3:0] ones_digit;
 
-    // CORRECTED: Replaced non-synthesizable operators with synthesizable logic
     always @(*) begin
-        // Default assignment
         tens_digit = 0;
-        ones_digit = bcd_value; // Assume ones digit is the value itself initially
+        ones_digit = bcd_value;
 
         if (bcd_value >= 90) begin tens_digit = 9; ones_digit = bcd_value - 90; end
         else if (bcd_value >= 80) begin tens_digit = 8; ones_digit = bcd_value - 80; end
@@ -692,7 +677,7 @@ module BCDToSevenSegment (
 endmodule
 
 
-// ===================== 7-Segment Scanner - SIMPLIFIED ==================
+// ===================== 7-Segment Scanner ==================
 module SevenSegmentScanner4Digit #(
     parameter SEG_ACTIVE_HIGH    = 1'b1,
     parameter SEL_ACTIVE_HIGH    = 1'b1
@@ -889,26 +874,21 @@ module BuzzerController(
     output buzzer_output
 );
     
-    // Timing parameters for proper audio feedback
-    localparam [23:0] SHORT_BEEP_DURATION = 24'd4000000;    // 0.1 seconds at 40MHz
-    localparam [23:0] LONG_BEEP_DURATION  = 24'd20000000;   // 0.5 seconds at 40MHz  
-    
-    // Frequencies for different beeps
-    localparam [15:0] NORMAL_BEEP_FREQ  = 16'd45454;      // ~880 Hz (A5 note)
-    localparam [15:0] FINAL_BEEP_FREQ   = 16'd75835;      // ~523 Hz (C5 note, a different tone)
+    localparam [23:0] SHORT_BEEP_DURATION = 24'd4000000;
+    localparam [23:0] LONG_BEEP_DURATION  = 24'd20000000;
+    localparam [15:0] NORMAL_BEEP_FREQ  = 16'd45454;
+    localparam [15:0] FINAL_BEEP_FREQ   = 16'd75835;
 
     reg beep_active; 
     reg [23:0] duration_counter; 
     reg [15:0] frequency_counter; 
     reg square_wave;
-    reg is_long_beep; // 0=short, 1=long
+    reg is_long_beep; 
     
-    // Edge detection for triggers to prevent continuous activation
     reg short_trigger_prev, long_trigger_prev;
     wire short_trigger_edge = short_beep_trigger & ~short_trigger_prev;
     wire long_trigger_edge = long_beep_trigger & ~long_trigger_prev;
     
-    // CORRECTED: Moved wire declaration outside of always block
     wire [15:0] current_freq_limit;
     assign current_freq_limit = is_long_beep ? FINAL_BEEP_FREQ : NORMAL_BEEP_FREQ;
 
@@ -937,7 +917,7 @@ module BuzzerController(
                     is_long_beep <= 1'b0;
                     frequency_counter <= 16'd0;
                 end
-            end else begin // beep is active
+            end else begin
                 if (duration_counter > 0)
                     duration_counter <= duration_counter - 1;
                 else
@@ -956,7 +936,7 @@ module BuzzerController(
 endmodule
 
 
-// ===================== LCD Controller - FIXED VERSION ==================
+// ===================== LCD Controller - FINAL CORRECTED ==================
 module LCD1602Controller (
     input  wire        clk,
     input  wire        rst,
@@ -989,57 +969,63 @@ module LCD1602Controller (
         extract_character = line_data >> (8 * (15 - char_index));
     endfunction
 
-    localparam [4:0] LCD_POWER_WAIT    = 5'd0,  LCD_FUNCTION_SET = 5'd1,  LCD_DISPLAY_OFF = 5'd2,
-                     LCD_CLEAR_DISPLAY = 5'd3,  LCD_ENTRY_MODE   = 5'd4,  LCD_DISPLAY_ON  = 5'd5,
-                     LCD_SET_LINE1     = 5'd6,  LCD_WRITE_LINE1  = 5'd7,  LCD_NEXT_LINE1  = 5'd8,
-                     LCD_SET_LINE2     = 5'd9,  LCD_WRITE_LINE2  = 5'd10, LCD_NEXT_LINE2  = 5'd11,
-                     LCD_SEND_BYTE     = 5'd12, LCD_E_HIGH       = 5'd13, LCD_E_LOW       = 5'd14, 
-                     LCD_DELAY         = 5'd15, LCD_IDLE         = 5'd16;
+    localparam [4:0] S_POWER_ON        = 5'd0,
+                     S_FUNC_SET        = 5'd1,
+                     S_DISPLAY_OFF     = 5'd2,
+                     S_CLEAR           = 5'd3,
+                     S_ENTRY_MODE      = 5'd4,
+                     S_DISPLAY_ON      = 5'd5,
+                     S_SET_LINE1       = 5'd6,
+                     S_WRITE_LINE1     = 5'd7,
+                     S_NEXT_CHAR1      = 5'd8,
+                     S_SET_LINE2       = 5'd9,
+                     S_WRITE_LINE2     = 5'd10,
+                     S_NEXT_CHAR2      = 5'd11,
+                     S_IDLE            = 5'd12,
+                     S_SEND            = 5'd13,
+                     S_PULSE_E         = 5'd14,
+                     S_WAIT            = 5'd15;
                      
     reg [4:0] current_state, return_state;
     reg initialization_done;
-    reg [7:0] post_delay;
 
     always @(posedge clk or posedge rst) begin
         if (rst) begin
             lcd_rs <= 1'b0; 
             lcd_e <= 1'b0; 
             lcd_data <= 8'h00;
-            delay_counter <= 8'd20;
-            current_state <= LCD_POWER_WAIT; 
-            character_index <= 5'd0; 
-            is_data_mode <= 1'b0; 
-            post_delay <= 8'd0; 
-            current_byte <= 8'h00;
+            delay_counter <= 8'd50; // CORRECTED: Increased power-on delay
+            current_state <= S_POWER_ON; 
             initialization_done <= 1'b0;
         end else begin
-            
             if (delay_counter > 0) begin
-                delay_counter <= delay_counter - 8'd1;
+                delay_counter <= delay_counter - 1;
             end else begin
                 case (current_state)
-                    LCD_POWER_WAIT:    begin post_delay <= 8'd20; return_state <= LCD_FUNCTION_SET; current_state <= LCD_DELAY; end
-                    LCD_FUNCTION_SET:  begin current_byte <= 8'h38; is_data_mode <= 1'b0; post_delay <= 8'd5; return_state <= LCD_DISPLAY_OFF; current_state <= LCD_SEND_BYTE; end
-                    LCD_DISPLAY_OFF:   begin current_byte <= 8'h08; is_data_mode <= 1'b0; post_delay <= 8'd2; return_state <= LCD_CLEAR_DISPLAY; current_state <= LCD_SEND_BYTE; end
-                    LCD_CLEAR_DISPLAY: begin current_byte <= 8'h01; is_data_mode <= 1'b0; post_delay <= 8'd2; return_state <= LCD_ENTRY_MODE; current_state <= LCD_SEND_BYTE; end
-                    LCD_ENTRY_MODE:    begin current_byte <= 8'h06; is_data_mode <= 1'b0; post_delay <= 8'd2; return_state <= LCD_DISPLAY_ON; current_state <= LCD_SEND_BYTE; end
-                    LCD_DISPLAY_ON:    begin current_byte <= 8'h0C; is_data_mode <= 1'b0; post_delay <= 8'd2; return_state <= LCD_SET_LINE1; initialization_done <= 1'b1; current_state <= LCD_SEND_BYTE; end
-                    LCD_SET_LINE1:     begin current_byte <= 8'h80; is_data_mode <= 1'b0; post_delay <= 8'd1; character_index <= 5'd0; return_state <= LCD_WRITE_LINE1; current_state <= LCD_SEND_BYTE; end
-                    LCD_WRITE_LINE1:   begin current_byte <= extract_character(line1_data, character_index[3:0]); is_data_mode <= 1'b1; post_delay <= 8'd1; return_state <= LCD_NEXT_LINE1; current_state <= LCD_SEND_BYTE; end
-                    LCD_NEXT_LINE1:    begin if (character_index == 5'd15) current_state <= LCD_SET_LINE2; else begin character_index <= character_index + 5'd1; current_state <= LCD_WRITE_LINE1; end end
-                    LCD_SET_LINE2:     begin current_byte <= 8'hC0; is_data_mode <= 1'b0; post_delay <= 8'd1; character_index <= 5'd0; return_state <= LCD_WRITE_LINE2; current_state <= LCD_SEND_BYTE; end
-                    LCD_WRITE_LINE2:   begin current_byte <= extract_character(line2_data, character_index[3:0]); is_data_mode <= 1'b1; post_delay <= 8'd1; return_state <= LCD_NEXT_LINE2; current_state <= LCD_SEND_BYTE; end
-                    LCD_NEXT_LINE2:    begin if (character_index == 5'd15) current_state <= LCD_IDLE; else begin character_index <= character_index + 5'd1; current_state <= LCD_WRITE_LINE2; end end
-                    LCD_IDLE:          begin if (data_changed && initialization_done) current_state <= LCD_SET_LINE1; end
-                    LCD_SEND_BYTE:     begin lcd_rs <= is_data_mode; lcd_data <= current_byte; lcd_e <= 1'b0; delay_counter <= 8'd1; current_state <= LCD_E_HIGH; end
-                    LCD_E_HIGH:        begin lcd_e <= 1'b1; delay_counter <= 8'd1; current_state <= LCD_E_LOW; end
-                    LCD_E_LOW:         begin lcd_e <= 1'b0; delay_counter <= post_delay; current_state <= LCD_DELAY; end
-                    LCD_DELAY:         current_state <= return_state;
-                    default:           current_state <= LCD_POWER_WAIT;
+                    S_POWER_ON:        current_state <= S_FUNC_SET;
+                    S_FUNC_SET:        begin current_byte <= 8'h38; is_data_mode <= 1'b0; delay_counter <= 8'd5;  return_state <= S_DISPLAY_OFF;   current_state <= S_SEND; end
+                    S_DISPLAY_OFF:     begin current_byte <= 8'h08; is_data_mode <= 1'b0; delay_counter <= 8'd2;  return_state <= S_CLEAR;         current_state <= S_SEND; end
+                    S_CLEAR:           begin current_byte <= 8'h01; is_data_mode <= 1'b0; delay_counter <= 8'd5;  return_state <= S_ENTRY_MODE;    current_state <= S_SEND; end // CORRECTED: Increased clear delay
+                    S_ENTRY_MODE:      begin current_byte <= 8'h06; is_data_mode <= 1'b0; delay_counter <= 8'd2;  return_state <= S_DISPLAY_ON;    current_state <= S_SEND; end
+                    S_DISPLAY_ON:      begin current_byte <= 8'h0C; is_data_mode <= 1'b0; delay_counter <= 8'd2;  return_state <= S_SET_LINE1; initialization_done <= 1'b1; current_state <= S_SEND; end
+                    
+                    S_SET_LINE1:       begin current_byte <= 8'h80; is_data_mode <= 1'b0; delay_counter <= 8'd1;  character_index <= 5'd0; return_state <= S_WRITE_LINE1; current_state <= S_SEND; end
+                    S_WRITE_LINE1:     begin current_byte <= extract_character(line1_data, character_index[3:0]); is_data_mode <= 1'b1; delay_counter <= 8'd1;  return_state <= S_NEXT_CHAR1;  current_state <= S_SEND; end
+                    S_NEXT_CHAR1:      begin if (character_index == 5'd15) current_state <= S_SET_LINE2; else begin character_index <= character_index + 1; current_state <= S_WRITE_LINE1; end end
+                    
+                    S_SET_LINE2:       begin current_byte <= 8'hC0; is_data_mode <= 1'b0; delay_counter <= 8'd1;  character_index <= 5'd0; return_state <= S_WRITE_LINE2; current_state <= S_SEND; end
+                    S_WRITE_LINE2:     begin current_byte <= extract_character(line2_data, character_index[3:0]); is_data_mode <= 1'b1; delay_counter <= 8'd1;  return_state <= S_NEXT_CHAR2;  current_state <= S_SEND; end
+                    S_NEXT_CHAR2:      begin if (character_index == 5'd15) current_state <= S_IDLE; else begin character_index <= character_index + 1; current_state <= S_WRITE_LINE2; end end
+                    
+                    S_IDLE:            begin if (data_changed && initialization_done) current_state <= S_SET_LINE1; end
+                    
+                    S_SEND:            begin lcd_rs <= is_data_mode; lcd_data <= current_byte; current_state <= S_PULSE_E; end
+                    S_PULSE_E:         begin lcd_e <= 1'b1; delay_counter <= 8'd1; current_state <= S_WAIT; end
+                    S_WAIT:            begin lcd_e <= 1'b0; current_state <= return_state; end
+                    
+                    default:           current_state <= S_POWER_ON;
                 endcase
             end
         end
     end
 endmodule
-
-
