@@ -73,9 +73,8 @@ module TopModule #(
 
     // ============ CLOCK GENERATION ============
     localparam integer FREQ_40MHZ = 40_000_000;
-    localparam integer DIV_1HZ_TOGGLE  = SIM_SPEEDUP ? 20 : (FREQ_40MHZ / 2);  // 1 Hz toggle
-    localparam integer DIV_1KHZ_TOGGLE = SIM_SPEEDUP ? 200 : (FREQ_40MHZ / 2000); // 1 kHz toggle
-    
+    localparam integer DIV_1HZ_TOGGLE = SIM_SPEEDUP ? 20000 : (FREQ_40MHZ / 2); // 1 Hz toggle
+    localparam integer DIV_1KHZ_TOGGLE = SIM_SPEEDUP ? 2000 : (FREQ_40MHZ / 2000); // 1 kHz toggle    
     wire clk_1Hz, clk_1kHz;
     wire system_reset; // Forward declaration
 
@@ -152,6 +151,10 @@ module TopModule #(
             gender_latched <= G; 
             total_exercises_latched <= total_exercises_preview; 
         end
+    end
+
+    while (dut.system_reset) begin
+        @(posedge clk_40MHz);
     end
 
     // ============ WORKOUT STATE MACHINE ============
