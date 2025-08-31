@@ -153,10 +153,6 @@ module TopModule #(
         end
     end
 
-    while (dut.system_reset) begin
-        @(posedge clk_40MHz);
-    end
-
     // ============ WORKOUT STATE MACHINE ============
     wire [8:0] current_exercise_num;
     wire [7:0] countdown_seconds;
@@ -1090,10 +1086,10 @@ module BuzzerController(
 );
     
     // Timing parameters
-    localparam [25:0] SHORT_BEEP_DURATION = 26'd8000000;  // ~0.20 s
-    localparam [25:0] LONG_BEEP_DURATION  = 26'd24000000; // ~0.60 s
-    localparam [15:0] SHORT_BEEP_PERIOD   = 16'd19999;    // ~1 kHz
-    localparam [15:0] LONG_BEEP_PERIOD    = 16'd9999;     // ~2 kHz
+    localparam [25:0] SHORT_BEEP_DURATION = SIM_SPEEDUP ? 26'd80 : 26'd8000000;
+    localparam [25:0] LONG_BEEP_DURATION = SIM_SPEEDUP ? 26'd240 : 26'd24000000;
+    localparam [15:0] SHORT_BEEP_PERIOD = SIM_SPEEDUP ? 16'd19 : 16'd19999;
+    localparam [15:0] LONG_BEEP_PERIOD = SIM_SPEEDUP ? 16'd9 : 16'd9999;
 
     reg beep_active; 
     reg [25:0] duration_counter; 

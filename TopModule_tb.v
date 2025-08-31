@@ -160,6 +160,10 @@ module TopModule_tb;
             btn_reset = 0;
             wait_cycles(2000);
             btn_reset = 1;
+            // Wait for system reset completion
+            while (dut.system_reset) begin
+                @(posedge clk_40MHz);
+            end
             wait_cycles(400000);
         end
     endtask
