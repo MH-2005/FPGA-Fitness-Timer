@@ -77,12 +77,13 @@ module TopModule #(
     localparam integer DIV_1KHZ_TOGGLE = SIM_SPEEDUP ? 200 : (FREQ_40MHZ / 2000); // 1 kHz toggle
     
     wire clk_1Hz, clk_1kHz;
+    wire system_reset; // Forward declaration
 
     ClockDivToggle #(.TOGGLE_COUNT(DIV_1HZ_TOGGLE))
-      clock_div_1hz (.clk(clk_40MHz), .rst(1'b0), .clk_out(clk_1Hz));
+      clock_div_1hz (.clk(clk_40MHz), .rst(system_reset), .clk_out(clk_1Hz));
 
     ClockDivToggle #(.TOGGLE_COUNT(DIV_1KHZ_TOGGLE))
-      clock_div_1khz (.clk(clk_40MHz), .rst(1'b0), .clk_out(clk_1kHz));
+      clock_div_1khz (.clk(clk_40MHz), .rst(system_reset), .clk_out(clk_1kHz));
 
     // Generate 1Hz tick pulse in 40MHz domain
     reg clk_1Hz_prev;  
@@ -95,13 +96,13 @@ module TopModule #(
     wire start_btn_pressed, skip_btn_pressed, reset_btn_pressed;
     
     ButtonConditioner #(.ACTIVE_LOW(BTN_ACTIVE_LOW), .STABLE_COUNT(DEBOUNCE_CYCLES))
-      btn_start_cond (.clk(clk_40MHz), .rst(1'b0), .btn_in(btn_start), .press_pulse(start_btn_pressed));
+      btn_start_cond (.clk(clk_40MHz), .rst(system_reset), .btn_in(btn_start), .press_pulse(start_btn_pressed));
       
     ButtonConditioner #(.ACTIVE_LOW(BTN_ACTIVE_LOW), .STABLE_COUNT(DEBOUNCE_CYCLES))
-      btn_skip_cond  (.clk(clk_40MHz), .rst(1'b0), .btn_in(btn_skip),  .press_pulse(skip_btn_pressed));
+      btn_skip_cond  (.clk(clk_40MHz), .rst(system_reset), .btn_in(btn_skip),  .press_pulse(skip_btn_pressed));
       
     ButtonConditioner #(.ACTIVE_LOW(BTN_ACTIVE_LOW), .STABLE_COUNT(DEBOUNCE_CYCLES))
-      btn_reset_cond (.clk(clk_40MHz), .rst(1'b0), .btn_in(btn_reset), .press_pulse(reset_btn_pressed));
+      btn_reset_cond (.clk(clk_40MHz), .rst(system_reset), .btn_in(btn_reset), .press_pulse(reset_btn_pressed));
 
     // ============ RESET GENERATION ============
     localparam integer POR_CYCLES = SIM_SPEEDUP ? 32'd40000 : (FREQ_40MHZ / 1000 * POWERUP_DELAY_MS);
@@ -111,7 +112,7 @@ module TopModule #(
     PowerOnReset #(.CYCLES(POR_CYCLES)) 
       por_gen (.clk(clk_40MHz), .rst(power_on_reset));
 
-    wire system_reset;
+    
     ResetController #(.HOLD_CYCLES(RST_HOLD_CYCLES))
       reset_ctrl (.clk(clk_40MHz), .por(power_on_reset), .trigger(reset_btn_pressed), .rst_out(system_reset));
 
@@ -1284,3 +1285,4 @@ module LCD1602Controller (
         end
     end
 endmodule
+

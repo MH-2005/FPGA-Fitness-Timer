@@ -65,6 +65,10 @@ module TopModule_tb;
         MET = 2'b00;    // MET level 1
         G = 1'b0;       // Male
 
+        // **FIX: Wait for Power-On Reset to complete before starting tests**
+        $display("Waiting for DUT Power-On Reset...");
+        wait_cycles(50000); 
+
         // Test Vector 1: Basic Reset Test
         $display("\n--- Test 1: Reset Behavior ---");
         apply_reset();
@@ -160,7 +164,6 @@ module TopModule_tb;
         end
     endtask
 
-    // CORRECTED: changed 'input string' to 'input [255:0]'
     task press_button;
         inout button_signal;
         input [255:0] button_name;
@@ -186,10 +189,10 @@ module TopModule_tb;
     task check_idle_state;
         input [255:0] test_name;
         begin
-            if (dut.workout_state == 2'b00) begin
+            if (dut.fsm_unit.workout_state == 2'b00) begin
                 $display("✓ %s: System in IDLE state", test_name);
             end else begin
-                $display("✗ %s: Expected IDLE state, got %b", test_name, dut.workout_state);
+                $display("✗ %s: Expected IDLE state, got %b", test_name, dut.fsm_unit.workout_state);
             end
         end
     endtask
@@ -197,12 +200,12 @@ module TopModule_tb;
     task check_workout_started;
         input [255:0] test_name;
         begin
-            if (dut.workout_state == 2'b01 && dut.current_exercise_num > 0) begin
+            if (dut.fsm_unit.workout_state == 2'b01 && dut.current_exercise_num > 0) begin
                 $display("✓ %s: Workout started (Ex: %d, State: %b)", 
-                         test_name, dut.current_exercise_num, dut.workout_state);
+                         test_name, dut.current_exercise_num, dut.fsm_unit.workout_state);
             end else begin
                 $display("✗ %s: Workout not started (Ex: %d, State: %b)", 
-                         test_name, dut.current_exercise_num, dut.workout_state);
+                         test_name, dut.current_exercise_num, dut.fsm_unit.workout_state);
             end
         end
     endtask
@@ -213,7 +216,7 @@ module TopModule_tb;
         begin
             prev_exercise = dut.current_exercise_num;
             wait_cycles(10);
-            if (dut.current_exercise_num > prev_exercise || dut.workout_state == 2'b00) begin
+            if (dut.current_exercise_num > prev_exercise || dut.fsm_unit.workout_state == 2'b00) begin
                 $display("✓ %s: Exercise advanced (was %d, now %d)", 
                          test_name, prev_exercise, dut.current_exercise_num);
             end else begin
@@ -226,10 +229,10 @@ module TopModule_tb;
     task check_rest_state;
         input [255:0] test_name;
         begin
-            if (dut.workout_state == 2'b10) begin
+            if (dut.fsm_unit.workout_state == 2'b10) begin
                 $display("✓ %s: Entered REST state", test_name);
             end else begin
-                $display("✗ %s: Expected REST state, got %b", test_name, dut.workout_state);
+                $display("✗ %s: Expected REST state, got %b", test_name, dut.fsm_unit.workout_state);
             end
         end
     endtask
@@ -237,10 +240,10 @@ module TopModule_tb;
     task check_next_exercise;
         input [255:0] test_name;
         begin
-            if (dut.workout_state == 2'b01) begin
+            if (dut.fsm_unit.workout_state == 2'b01) begin
                 $display("✓ %s: Moved to next exercise (Ex: %d)", test_name, dut.current_exercise_num);
             end else begin
-                $display("✗ %s: Not in next exercise state %b", test_name, dut.workout_state);
+                $display("✗ %s: Not in next exercise state %b", test_name, dut.fsm_unit.workout_state);
             end
         end
     endtask
@@ -250,7 +253,7 @@ module TopModule_tb;
         begin
             $display("Waiting for work timer to complete...");
             timeout = 0;
-            while (dut.workout_state == 2'b01 && timeout < 10000) begin
+            while (dut.fsm_unit.workout_state == 2'b01 && timeout < 10000) begin
                 wait_cycles(10);
                 timeout = timeout + 1;
             end
