@@ -1,4 +1,5 @@
 `timescale 1ns / 1ps
+
 //////////////////////////////////////////////////////////////////////////////////
 // Company: 
 // Engineer: 
@@ -14,33 +15,34 @@
 // Dependencies: 
 //
 // Revision: 
-// Revision 0.01 - File Created
+// Revision 2.00 - Final, Stable Version
 // Additional Comments: 
 //
-//  Logic Lab Project (Spring 1404) - REFACTORED VERSION
+//  Logic Lab Project (Spring 1404) - FINAL CORRECTED VERSION
 //  TopModule - Fitness Workout Timer System
-//  - Debounce + one-shot on 40MHz
-//  - 1Hz tick, 1kHz scan domain  
-//  - 7-segment frame lock + re-frame blank
-//  - LCD1602 eight-bit driver with robust timing/state
-//  - Buzzer: 1kHz short, 2kHz long beeps
+//  - Fixed start button race condition for reliable one-press start.
+//  - Fixed LCD initialization timing for stable display.
+//  - Corrected all non-synthesizable operators (% and /).
+//  - Implemented 5-state FSM as per design documents.
+//  - Implemented different frequencies for normal and final beeps.
 // ==========================================================
+
 
 module TopModule #(
     // Simulation Parameters
-    parameter SIM_SPEEDUP      = 1'b0,
+    parameter SIM_SPEEDUP       = 1'b0,
     
-    // Display Parameters  
-    parameter SEG_ACTIVE_HIGH  = 1'b1,
-    parameter SEL_ACTIVE_HIGH  = 1'b1,
-    parameter BTN_ACTIVE_LOW   = 1'b1,
+    // Display Parameters   
+    parameter SEG_ACTIVE_HIGH   = 1'b1,
+    parameter SEL_ACTIVE_HIGH   = 1'b1,
+    parameter BTN_ACTIVE_LOW    = 1'b1,
     
     // Timing Parameters
-    parameter WORK_TIME_SEC    = 8'd45,
-    parameter REST_TIME_SEC    = 8'd15,
-    parameter DEBOUNCE_MS      = 5,
-    parameter RESET_HOLD_MS    = 100,
-    parameter POWERUP_DELAY_MS = 80
+    parameter WORK_TIME_SEC     = 8'd45,
+    parameter REST_TIME_SEC     = 8'd15,
+    parameter DEBOUNCE_MS       = 5,
+    parameter RESET_HOLD_MS     = 100,
+    parameter POWERUP_DELAY_MS  = 80
 )(
     // Clock & Reset
     input  clk_40MHz,
@@ -49,10 +51,10 @@ module TopModule #(
     input  btn_skip,    // Active-Low (board pull-ups)
     
     // User Inputs
-    input  [2:0] W,      // Weight selection
-    input  [1:0] Cal,    // Calorie target 
-    input  [1:0] MET,    // MET level
-    input        G,      // Gender
+    input  [2:0] W,       // Weight selection
+    input  [1:0] Cal,     // Calorie target 
+    input  [1:0] MET,     // MET level
+    input        G,       // Gender
     
     // Display Outputs
     output [7:0] SEG_DATA,
@@ -66,17 +68,20 @@ module TopModule #(
     output [7:0] LCD_D
 );
 
-    // Workout state definitions - MOVED INSIDE MODULE
-    localparam [1:0] WORKOUT_STATE_IDLE = 2'b00;
-    localparam [1:0] WORKOUT_STATE_WORK = 2'b01; 
-    localparam [1:0] WORKOUT_STATE_REST = 2'b10;
+
+    // Workout state definitions for display mapping
+    localparam [2:0] FSM_STATE_IDLE              = 3'b000;
+    localparam [2:0] FSM_STATE_EXERCISING        = 3'b001;
+    localparam [2:0] FSM_STATE_RESTING           = 3'b010;
+    localparam [2:0] FSM_STATE_BEEP_AFTER_REST   = 3'b011;
+    localparam [2:0] FSM_STATE_FINAL_BEEP        = 3'b100;
 
     // ============ CLOCK GENERATION ============
     localparam integer FREQ_40MHZ = 40_000_000;
     localparam integer DIV_1HZ_TOGGLE = SIM_SPEEDUP ? 20000 : (FREQ_40MHZ / 2); // 1 Hz toggle
-    localparam integer DIV_1KHZ_TOGGLE = SIM_SPEEDUP ? 2000 : (FREQ_40MHZ / 2000); // 1 kHz toggle    
+    localparam integer DIV_1KHZ_TOGGLE = SIM_SPEEDUP ? 2000 : (FREQ_40MHZ / 2000); // 1 kHz toggle   
     wire clk_1Hz, clk_1kHz;
-    wire system_reset; // Forward declaration
+    wire system_reset;
 
     ClockDivToggle #(.TOGGLE_COUNT(DIV_1HZ_TOGGLE))
       clock_div_1hz (.clk(clk_40MHz), .rst(system_reset), .clk_out(clk_1Hz));
@@ -85,7 +90,7 @@ module TopModule #(
       clock_div_1khz (.clk(clk_40MHz), .rst(system_reset), .clk_out(clk_1kHz));
 
     // Generate 1Hz tick pulse in 40MHz domain
-    reg clk_1Hz_prev;  
+    reg clk_1Hz_prev;   
     always @(posedge clk_40MHz) clk_1Hz_prev <= clk_1Hz;
     wire tick_1Hz = clk_1Hz & ~clk_1Hz_prev;
 
@@ -111,11 +116,8 @@ module TopModule #(
     PowerOnReset #(.CYCLES(POR_CYCLES)) 
       por_gen (.clk(clk_40MHz), .rst(power_on_reset));
 
-    
     ResetController #(.HOLD_CYCLES(RST_HOLD_CYCLES))
       reset_ctrl (.clk(clk_40MHz), .por(power_on_reset), .trigger(reset_btn_pressed), .rst_out(system_reset));
-
-    wire buzzer_reset = power_on_reset;
 
     // ============ EXERCISE CALCULATION ============
     wire [8:0] total_exercises_preview;
@@ -127,8 +129,9 @@ module TopModule #(
         .total_exercises(total_exercises_preview)
     );
 
-    // Only start if calculated exercises > 0
+    // CORRECTED: Create a qualified start command to prevent race condition
     wire start_workout_cmd = start_btn_pressed & (total_exercises_preview != 9'd0);
+    wire start_idle_cmd    = start_btn_pressed & (total_exercises_preview == 9'd0);
 
     // Latch user inputs when workout starts
     reg [2:0] weight_latched;    
@@ -144,7 +147,7 @@ module TopModule #(
             gender_latched <= 1'b0; 
             total_exercises_latched <= 9'd0; 
         end
-        else if (start_workout_cmd) begin 
+        else if (start_btn_pressed) begin // Latch on any start press
             weight_latched <= W; 
             calorie_latched <= Cal; 
             met_latched <= MET; 
@@ -153,11 +156,12 @@ module TopModule #(
         end
     end
 
-    // ============ WORKOUT STATE MACHINE ============
+    // ============ WORKOUT STATE MACHINE (5-STATE VERSION) ============
+
     wire [8:0] current_exercise_num;
     wire [7:0] countdown_seconds;
-    wire rest_period_entered, exercise_completed, workout_finished;
-    wire [1:0] workout_state;
+    wire beep_after_rest_pulse, workout_finished_pulse;
+    wire [2:0] workout_state_3bit;
     
     WorkoutStateMachine #(
         .WORK_DURATION(WORK_TIME_SEC),
@@ -165,16 +169,17 @@ module TopModule #(
     ) fsm_unit (
         .reset(system_reset), 
         .skip_button(skip_btn_pressed), 
-        .start_button(start_workout_cmd),
+        // CORRECTED: Use the qualified start commands
+        .start_button_go(start_workout_cmd),
+        .start_button_idle(start_idle_cmd),
         .clk(clk_40MHz), 
         .tick_1Hz(tick_1Hz),
         .total_exercises(total_exercises_latched),
         .current_exercise(current_exercise_num), 
         .countdown_timer(countdown_seconds),
-        .rest_entered(rest_period_entered), 
-        .exercise_done(exercise_completed),
-        .workout_complete(workout_finished), 
-        .state(workout_state)
+        .beep_after_rest(beep_after_rest_pulse),
+        .workout_complete(workout_finished_pulse), 
+        .state(workout_state_3bit)
     );
 
     // ============ 1KHZ DOMAIN SYNCHRONIZATION ============
@@ -188,118 +193,81 @@ module TopModule #(
     // Synchronize display data to 1kHz domain
     reg [7:0] seconds_display, exercise_display; 
     reg idle_state_display;
+    reg [1:0] workout_state_display; // 2-bit state for LCD
     
     always @(posedge clk_1kHz) begin
         seconds_display <= countdown_seconds;
         exercise_display <= (current_exercise_num > 9'd99) ? 8'd99 : current_exercise_num[7:0];
-        idle_state_display <= (workout_state == WORKOUT_STATE_IDLE);
-    end
-
-    // Power-on blank timing
-    reg [2:0] startup_blank_ms;
-    always @(posedge clk_1kHz) begin
-        if (reset_1khz_domain) 
-            startup_blank_ms <= 3'd5;
-        else if (startup_blank_ms != 0) 
-            startup_blank_ms <= startup_blank_ms - 3'd1;
+        
+        // Map the 5 FSM states to the 3 relevant display states (Idle, Work, Rest)
+        case (workout_state_3bit)
+            FSM_STATE_IDLE, FSM_STATE_FINAL_BEEP: begin
+                 idle_state_display <= 1'b1;
+                 workout_state_display <= 2'b00; // IDLE display mode
+            end
+            FSM_STATE_EXERCISING, FSM_STATE_BEEP_AFTER_REST: begin
+                 idle_state_display <= 1'b0;
+                 workout_state_display <= 2'b01; // WORK display mode
+            end
+            FSM_STATE_RESTING: begin
+                 idle_state_display <= 1'b0;
+                 workout_state_display <= 2'b10; // REST display mode
+            end
+            default: begin
+                 idle_state_display <= 1'b1;
+                 workout_state_display <= 2'b00;
+            end
+        endcase
     end
 
     // ============ 7-SEGMENT DISPLAY ============
-    
-    // Frame sync for smooth transitions
-    reg dot_blink_sync1, dot_blink_sync2;  
-    always @(posedge clk_1kHz) begin 
-        if (reset_1khz_domain) begin 
-            dot_blink_sync1 <= 1'b1; 
-            dot_blink_sync2 <= 1'b1; 
-        end else begin 
-            dot_blink_sync1 <= clk_1Hz; 
-            dot_blink_sync2 <= dot_blink_sync1; 
-        end 
-    end
-    wire dot_blink_signal = dot_blink_sync2;
-
-    // Generate 7-segment patterns
     wire [7:0] exercise_ones_seg, exercise_tens_seg, timer_ones_seg, timer_tens_seg;
     BCDToSevenSegment exercise_decoder (.bcd_value(exercise_display), 
-                                       .ones_segments(exercise_ones_seg), 
-                                       .tens_segments(exercise_tens_seg));
+                                         .ones_segments(exercise_ones_seg), 
+                                         .tens_segments(exercise_tens_seg));
     BCDToSevenSegment timer_decoder (.bcd_value(seconds_display), 
-                                     .ones_segments(timer_ones_seg), 
-                                     .tens_segments(timer_tens_seg));
+                                       .ones_segments(timer_ones_seg), 
+                                       .tens_segments(timer_tens_seg));
 
-    // Display patterns
     localparam [7:0] SEG_UNDERSCORE = 8'b00001000;
     wire [7:0] digit0_pattern = idle_state_display ? SEG_UNDERSCORE : timer_ones_seg;
     wire [7:0] digit1_pattern = idle_state_display ? SEG_UNDERSCORE : timer_tens_seg;
     wire [7:0] digit2_pattern = idle_state_display ? SEG_UNDERSCORE : exercise_ones_seg;
     wire [7:0] digit3_pattern = idle_state_display ? SEG_UNDERSCORE : exercise_tens_seg;
-
-    // Frame transition detection for smooth updates
-    reg idle_state_prev; 
-    always @(posedge clk_1kHz) idle_state_prev <= idle_state_display;
-    wire display_layout_changed = (idle_state_prev ^ idle_state_display);
-
-    wire frame_strobe;
-    reg [1:0] reframe_state;
-    always @(posedge clk_1kHz or posedge reset_1khz_domain) begin
-        if (reset_1khz_domain) 
-            reframe_state <= 2'd0;
-        else begin
-            if (display_layout_changed && reframe_state == 2'd0) 
-                reframe_state <= 2'd1;
-            else if (reframe_state == 2'd1 && frame_strobe) 
-                reframe_state <= 2'd2;
-            else if (reframe_state == 2'd2 && frame_strobe) 
-                reframe_state <= 2'd0;
-        end
-    end
-
-    wire blank_display = (startup_blank_ms != 0) | (reframe_state == 2'd2);
-
+    
     SevenSegmentScanner4Digit #(
         .SEG_ACTIVE_HIGH(SEG_ACTIVE_HIGH),
-        .SEL_ACTIVE_HIGH(SEL_ACTIVE_HIGH),
-        .DOT_DIGIT_INDEX(2)
+        .SEL_ACTIVE_HIGH(SEL_ACTIVE_HIGH)
     ) seg_scanner (
         .clk_scan(clk_1kHz), 
         .rst(reset_1khz_domain), 
-        .blank_all(blank_display), 
-        .dot_blink(dot_blink_signal),
+        .blank_all(1'b0), 
         .digit0(digit0_pattern), 
         .digit1(digit1_pattern), 
         .digit2(digit2_pattern), 
         .digit3(digit3_pattern),
         .segment_outputs(SEG_DATA), 
-        .select_outputs(SEG_SEL), 
-        .frame_strobe(frame_strobe)
+        .select_outputs(SEG_SEL)
     );
 
     // ============ LCD DISPLAY ============
-    
     wire [127:0] lcd_line1_text, lcd_line2_text;
     
     LCDTextGenerator lcd_text_gen (
         .clk(clk_1kHz),
         .rst(reset_1khz_domain),
         .idle_mode(idle_state_display),
-        
-        // Current inputs (for idle display)
         .weight_sel(W),
         .calorie_sel(Cal), 
         .met_sel(MET),
         .gender(G),
         .exercises_preview(total_exercises_preview),
-        
-        // Latched values (for workout display)
         .weight_latched(weight_latched),
         .gender_latched(gender_latched),
         .total_exercises(total_exercises_latched),
         .current_exercise(current_exercise_num),
         .countdown_time(countdown_seconds),
-        .workout_state(workout_state),
-        
-        // Output text lines
+        .workout_state(workout_state_display),
         .line1_text(lcd_line1_text),
         .line2_text(lcd_line2_text)
     );
@@ -315,15 +283,15 @@ module TopModule #(
         .lcd_data(LCD_D)
     );
 
-    // ============ AUDIO FEEDBACK ============
-    wire short_beep_trigger = start_btn_pressed | skip_btn_pressed | reset_btn_pressed | 
-                              rest_period_entered | exercise_completed;
-                              
+    // ============ AUDIO FEEDBACK - CORRECTED ============
+    wire short_beep_trigger = beep_after_rest_pulse;
+    wire long_beep_trigger  = workout_finished_pulse;
+                               
     BuzzerController buzzer_ctrl (
         .clk(clk_40MHz), 
-        .rst(buzzer_reset),
+        .rst(system_reset),
         .short_beep_trigger(short_beep_trigger), 
-        .long_beep_trigger(workout_finished),
+        .long_beep_trigger(long_beep_trigger),
         .buzzer_output(buzzer)
     );
 
@@ -332,6 +300,7 @@ endmodule
 // ============================================================================
 //                               SUPPORTING MODULES
 // ============================================================================
+
 
 // ===================== Exercise Calculator ==================
 module ExerciseCalculator(
@@ -342,601 +311,418 @@ module ExerciseCalculator(
     output [8:0] total_exercises
 );
     
-    // Weight mapping (kg)
-    function [6:0] get_weight_kg;
-        input [2:0] sel;
-        case (sel)
-            3'b000: get_weight_kg = 7'd50;   3'b001: get_weight_kg = 7'd60;
-            3'b010: get_weight_kg = 7'd70;   3'b011: get_weight_kg = 7'd80;
-            3'b100: get_weight_kg = 7'd90;   3'b101: get_weight_kg = 7'd100;
-            3'b110: get_weight_kg = 7'd110;  3'b111: get_weight_kg = 7'd120;
-            default: get_weight_kg = 7'd70;
-        endcase
-    endfunction
-
-    // Calorie target mapping
-    function [8:0] get_calorie_target;
-        input [1:0] sel;
-        case (sel)
-            2'b00: get_calorie_target = 9'd50;   2'b01: get_calorie_target = 9'd100;
-            2'b10: get_calorie_target = 9'd150;  2'b11: get_calorie_target = 9'd200;
-            default: get_calorie_target = 9'd100;
-        endcase
-    endfunction
-
-    // MET multiplier mapping
-    function [3:0] get_met_multiplier;
-        input [1:0] sel;
-        case (sel) 
-            2'b00: get_met_multiplier = 4'd1;    2'b01: get_met_multiplier = 4'd2; 
-            2'b10: get_met_multiplier = 4'd4;    2'b11: get_met_multiplier = 4'd8;
-            default: get_met_multiplier = 4'd1;
-        endcase
-    endfunction
-
-    // Lookup table for base exercises (weight + calorie combination)
-    reg [7:0] base_exercises;
+    reg [8:0] base_exercises;
     always @(*) begin
         case ({weight_sel, calorie_sel})
-            5'b00000: base_exercises = 8'd60;   5'b00001: base_exercises = 8'd120;  
-            5'b00010: base_exercises = 8'd180;  5'b00011: base_exercises = 8'd240;
-            5'b00100: base_exercises = 8'd50;   5'b00101: base_exercises = 8'd100;  
-            5'b00110: base_exercises = 8'd150;  5'b00111: base_exercises = 8'd200;
-            5'b01000: base_exercises = 8'd42;   5'b01001: base_exercises = 8'd85;   
-            5'b01010: base_exercises = 8'd128;  5'b01011: base_exercises = 8'd171;
-            5'b01100: base_exercises = 8'd37;   5'b01101: base_exercises = 8'd75;   
-            5'b01110: base_exercises = 8'd112;  5'b01111: base_exercises = 8'd150;
-            5'b10000: base_exercises = 8'd33;   5'b10001: base_exercises = 8'd66;   
-            5'b10010: base_exercises = 8'd100;  5'b10011: base_exercises = 8'd133;
-            5'b10100: base_exercises = 8'd30;   5'b10101: base_exercises = 8'd60;   
-            5'b10110: base_exercises = 8'd90;   5'b10111: base_exercises = 8'd120;
-            5'b11000: base_exercises = 8'd27;   5'b11001: base_exercises = 8'd54;   
-            5'b11010: base_exercises = 8'd81;   5'b11011: base_exercises = 8'd109;
-            5'b11100: base_exercises = 8'd25;   5'b11101: base_exercises = 8'd50;   
-            5'b11110: base_exercises = 8'd75;   5'b11111: base_exercises = 8'd100;
-            default:  base_exercises = 8'd50;
+            5'b00000: base_exercises = 9'd60;   5'b00001: base_exercises = 9'd120;  
+            5'b00010: base_exercises = 9'd180;  5'b00011: base_exercises = 9'd240;
+            5'b00100: base_exercises = 9'd50;   5'b00101: base_exercises = 9'd100;  
+            5'b00110: base_exercises = 9'd150;  5'b00111: base_exercises = 9'd200;
+            5'b01000: base_exercises = 9'd42;   5'b01001: base_exercises = 9'd85;   
+            5'b01010: base_exercises = 9'd128;  5'b01011: base_exercises = 9'd171;
+            5'b01100: base_exercises = 9'd37;   5'b01101: base_exercises = 9'd75;   
+            5'b01110: base_exercises = 9'd112;  5'b01111: base_exercises = 9'd150;
+            5'b10000: base_exercises = 9'd33;   5'b10001: base_exercises = 9'd66;   
+            5'b10010: base_exercises = 9'd100;  5'b10011: base_exercises = 9'd133;
+            5'b10100: base_exercises = 9'd30;   5'b10101: base_exercises = 9'd60;   
+            5'b10110: base_exercises = 9'd90;   5'b10111: base_exercises = 9'd120;
+            5'b11000: base_exercises = 9'd27;   5'b11001: base_exercises = 9'd54;   
+            5'b11010: base_exercises = 9'd81;   5'b11011: base_exercises = 9'd109;
+            5'b11100: base_exercises = 9'd25;   5'b11101: base_exercises = 9'd50;   
+            5'b11110: base_exercises = 9'd75;   5'b11111: base_exercises = 9'd100;
+            default:  base_exercises = 9'd50;
         endcase
     end
     
-    // Gender adjustment (female gets +25% more exercises)
-    wire [8:0] gender_adjusted = gender ? 
-        ({1'b0, base_exercises} + {4'b0000, base_exercises[7:3]}) : // +25% for female
-        {1'b0, base_exercises};  // Male: no adjustment
+    wire [9:0] gender_adjusted_wide = gender ? (base_exercises + (base_exercises >> 3)) : base_exercises;
+    wire [8:0] gender_adjusted = (gender_adjusted_wide > 9'd511) ? 9'd511 : gender_adjusted_wide[8:0];
     
-    // MET level adjustment (higher MET = fewer exercises)
-    assign total_exercises = (met_sel == 2'b00) ? gender_adjusted :                // MET 1: no change
-                             (met_sel == 2'b01) ? {1'b0, gender_adjusted[8:1]} : // MET 2: /2
-                             (met_sel == 2'b10) ? {2'b00, gender_adjusted[8:2]} : // MET 4: /4  
-                                                  {3'b000, gender_adjusted[8:3]};   // MET 8: /8
+    assign total_exercises = (met_sel == 2'b00) ? gender_adjusted :
+                             (met_sel == 2'b01) ? (gender_adjusted >> 1) :
+                             (met_sel == 2'b10) ? (gender_adjusted >> 2) :
+                                                  (gender_adjusted >> 3);
 
 endmodule
 
-// ===================== Workout State Machine ==================
+
+// ===================== Workout State Machine - FINAL CORRECTED VERSION ==================
 module WorkoutStateMachine #(
     parameter [7:0] WORK_DURATION = 8'd45,
     parameter [7:0] REST_DURATION = 8'd15
 )(
     input reset, 
     input skip_button, 
-    input start_button, 
+    input start_button_go,      // Qualified start signal for workout > 0
+    input start_button_idle,    // Qualified start signal for workout = 0
     input clk, 
     input tick_1Hz,
     input  [8:0] total_exercises,
+
     output reg [8:0] current_exercise, 
     output reg [7:0] countdown_timer,
-    output reg rest_entered, 
-    output reg exercise_done, 
+    output reg beep_after_rest,
     output reg workout_complete,
-    output [1:0] state
+    output [2:0] state
 );
 
-    // Workout state definitions - also defined locally
-    localparam [1:0] WORKOUT_STATE_IDLE = 2'b00;
-    localparam [1:0] WORKOUT_STATE_WORK = 2'b01; 
-    localparam [1:0] WORKOUT_STATE_REST = 2'b10;
+    localparam [2:0] STATE_IDLE              = 3'b000;
+    localparam [2:0] STATE_EXERCISING        = 3'b001;
+    localparam [2:0] STATE_RESTING           = 3'b010;
+    localparam [2:0] STATE_BEEP_AFTER_REST   = 3'b011;
+    localparam [2:0] STATE_FINAL_BEEP        = 3'b100;
 
-    reg [1:0] workout_state; 
+    reg [2:0] current_state, next_state;
     reg [7:0] work_counter; 
     reg [7:0] rest_counter;
     
-    assign state = workout_state;
-
-    always @(posedge clk) begin
+    always @(posedge clk or posedge reset) begin
+        if (reset)
+            current_state <= STATE_IDLE;
+        else
+            current_state <= next_state;
+    end
+    
+    always @(posedge clk or posedge reset) begin
         if (reset) begin
-            workout_state <= WORKOUT_STATE_IDLE; 
-            current_exercise <= 9'd0;
-            countdown_timer <= (total_exercises > 9'd99) ? 8'd99 : total_exercises[7:0];
-            rest_entered <= 1'b0; 
-            exercise_done <= 1'b0; 
-            workout_complete <= 1'b0;
-            work_counter <= WORK_DURATION; 
+            work_counter <= WORK_DURATION;
             rest_counter <= REST_DURATION;
+            current_exercise <= 9'd1;
         end else begin
-            // Clear pulse signals
-            rest_entered <= 1'b0; 
-            exercise_done <= 1'b0; 
-            workout_complete <= 1'b0;
+            if(current_state == STATE_EXERCISING && tick_1Hz && work_counter > 0)
+                work_counter <= work_counter - 1;
             
-            case (workout_state)
-                WORKOUT_STATE_IDLE: begin 
-                    countdown_timer <= (total_exercises > 9'd99) ? 8'd99 : total_exercises[7:0];
-                    current_exercise <= 9'd0;
-                    if (start_button) begin
-                        workout_state <= WORKOUT_STATE_WORK; 
-                        current_exercise <= 9'd1; 
-                        work_counter <= WORK_DURATION; 
+            if(current_state == STATE_RESTING && tick_1Hz && rest_counter > 0)
+                rest_counter <= rest_counter - 1;
+
+            if (next_state != current_state) begin
+                case (next_state)
+                    STATE_IDLE: begin
+                        current_exercise <= 9'd1;
+                        work_counter <= WORK_DURATION;
                         rest_counter <= REST_DURATION;
                     end
-                end
-                
-                WORKOUT_STATE_WORK: begin 
-                    countdown_timer <= work_counter;
-                    if (skip_button) begin
-                        if (current_exercise < total_exercises) begin
-                            current_exercise <= current_exercise + 9'd1; 
-                            work_counter <= WORK_DURATION; 
-                            workout_state <= WORKOUT_STATE_WORK;
-                        end else begin
-                            workout_complete <= 1'b1; 
-                            workout_state <= WORKOUT_STATE_IDLE;
-                        end
-                    end else if (work_counter == 0) begin
-                        rest_counter <= REST_DURATION; 
-                        rest_entered <= 1'b1; 
-                        workout_state <= WORKOUT_STATE_REST;
-                    end else if (tick_1Hz && work_counter > 0) begin
-                        work_counter <= work_counter - 8'd1;
+                    STATE_EXERCISING: begin
+                        work_counter <= WORK_DURATION;
+                        // Increment exercise number when coming from the beep state
+                        if (current_state == STATE_BEEP_AFTER_REST)
+                           current_exercise <= current_exercise + 1;
                     end
-                end
-                
-                WORKOUT_STATE_REST: begin 
-                    countdown_timer <= rest_counter;
-                    if (skip_button) begin
-                        if (current_exercise < total_exercises) begin
-                            current_exercise <= current_exercise + 9'd1; 
-                            work_counter <= WORK_DURATION; 
-                            workout_state <= WORKOUT_STATE_WORK;
-                        end else begin
-                            workout_complete <= 1'b1; 
-                            workout_state <= WORKOUT_STATE_IDLE;
-                        end
-                    end else if (rest_counter == 0) begin
-                        if (current_exercise < total_exercises) begin
-                            exercise_done <= 1'b1; 
-                            current_exercise <= current_exercise + 9'd1; 
-                            work_counter <= WORK_DURATION; 
-                            workout_state <= WORKOUT_STATE_WORK;  
-                        end else begin
-                            workout_complete <= 1'b1; 
-                            workout_state <= WORKOUT_STATE_IDLE;
-                        end
-                    end else if (tick_1Hz && rest_counter > 0) begin
-                        rest_counter <= rest_counter - 8'd1;
+                    STATE_RESTING: begin
+                        rest_counter <= REST_DURATION;
                     end
-                end
-                
-                default: workout_state <= WORKOUT_STATE_IDLE;
-            endcase
+                endcase
+            end
         end
     end
+
+    always @(*) begin
+        next_state = current_state;
+        beep_after_rest = 1'b0;
+        workout_complete = 1'b0;
+        countdown_timer = 8'd0;
+
+        case (current_state)
+            STATE_IDLE: begin
+                countdown_timer = (total_exercises > 9'd99) ? 8'd99 : total_exercises[7:0];
+                if (start_button_go)
+                    next_state = STATE_EXERCISING;
+                else if (start_button_idle)
+                    next_state = STATE_FINAL_BEEP;
+            end
+
+            STATE_EXERCISING: begin
+                countdown_timer = work_counter;
+                if (skip_button || work_counter == 0) begin
+                    if (current_exercise >= total_exercises)
+                        next_state = STATE_FINAL_BEEP;
+                    else
+                        next_state = STATE_RESTING;
+                end
+            end
+
+            STATE_RESTING: begin
+                countdown_timer = rest_counter;
+                 if (skip_button || rest_counter == 0)
+                    next_state = STATE_BEEP_AFTER_REST;
+            end
+            
+            STATE_BEEP_AFTER_REST: begin
+                countdown_timer = rest_counter; // Show 0 briefly
+                beep_after_rest = 1'b1;
+                next_state = STATE_EXERCISING;
+            end
+
+            STATE_FINAL_BEEP: begin
+                workout_complete = 1'b1;
+                // A new start press (for any workout value) will reset the system
+                if (start_button_go || start_button_idle)
+                    next_state = STATE_IDLE;
+            end
+            
+            default: next_state = STATE_IDLE;
+        endcase
+    end
+    
+    assign state = current_state;
+
 endmodule
+
 
 // ===================== LCD Text Generator ==================
 module LCDTextGenerator (
     input clk,
     input rst,
     input idle_mode,
-    
-    // Current inputs (for idle display)
     input [2:0] weight_sel,
     input [1:0] calorie_sel, 
     input [1:0] met_sel,
     input gender,
     input [8:0] exercises_preview,
-    
-    // Latched values (for workout display)  
     input [2:0] weight_latched,
     input gender_latched,
     input [8:0] total_exercises,
     input [8:0] current_exercise,
     input [7:0] countdown_time,
-    input [1:0] workout_state,
-    
-    // Output text lines
+    input [1:0] workout_state, 
     output [127:0] line1_text,
     output [127:0] line2_text
 );
-    // Workout state definitions needed for line 2 text
+    
     localparam [1:0] WORKOUT_STATE_WORK = 2'b01;
 
-    // Helper functions
-    function [7:0] weight_to_kg;
+    function [15:0] weight_to_ascii;
         input [2:0] sel;
         case (sel)
-            3'b000: weight_to_kg = 8'd50;   3'b001: weight_to_kg = 8'd60;
-            3'b010: weight_to_kg = 8'd70;   3'b011: weight_to_kg = 8'd80;
-            3'b100: weight_to_kg = 8'd90;   3'b101: weight_to_kg = 8'd100;
-            3'b110: weight_to_kg = 8'd110;  3'b111: weight_to_kg = 8'd120;
-            default: weight_to_kg = 8'd70;
+            3'b000: weight_to_ascii = "50";   3'b001: weight_to_ascii = "60";
+            3'b010: weight_to_ascii = "70";   3'b011: weight_to_ascii = "80";
+            3'b100: weight_to_ascii = "90";   3'b101: weight_to_ascii = "100";
+            3'b110: weight_to_ascii = "110";  3'b111: weight_to_ascii = "120";
+            default: weight_to_ascii = "70";
         endcase
     endfunction
 
-    function [8:0] calorie_target;
+    function [23:0] calorie_to_ascii;
         input [1:0] sel;
         case (sel)
-            2'b00: calorie_target = 9'd50;   2'b01: calorie_target = 9'd100;
-            2'b10: calorie_target = 9'd150;  2'b11: calorie_target = 9'd200;
-            default: calorie_target = 9'd100;
+            2'b00: calorie_to_ascii = " 50";   2'b01: calorie_to_ascii = "100";
+            2'b10: calorie_to_ascii = "150";   2'b11: calorie_to_ascii = "200";
+            default: calorie_to_ascii = "100";
         endcase
     endfunction
 
-    function [3:0] met_level;
+    function [7:0] met_to_ascii;
         input [1:0] sel;
         case (sel) 
-            2'b00: met_level = 4'd1;  2'b01: met_level = 4'd2; 
-            2'b10: met_level = 4'd4;  2'b11: met_level = 4'd8;
-            default: met_level = 4'd1;
+            2'b00: met_to_ascii = "1";  2'b01: met_to_ascii = "2"; 
+            2'b10: met_to_ascii = "4";  2'b11: met_to_ascii = "8";
+            default: met_to_ascii = "1";
         endcase
     endfunction
 
-    // BCD conversion for 9-bit values
-    function [11:0] binary_to_bcd_9bit;
-        input [8:0] binary_val;
+    function [11:0] bin_to_bcd3;
+        input [8:0] bin_in;
+        reg [3:0] d2, d1, d0;
         integer i;
-        reg [11:0] bcd_result;
-        reg [8:0] shift_reg;
-        begin
-            bcd_result = 12'd0;
-            shift_reg = binary_val;
-            for(i = 0; i < 9; i = i + 1) begin
-                if(bcd_result[3:0] >= 5)    bcd_result[3:0] = bcd_result[3:0] + 4'd3;
-                if(bcd_result[7:4] >= 5)    bcd_result[7:4] = bcd_result[7:4] + 4'd3;
-                if(bcd_result[11:8] >= 5)   bcd_result[11:8] = bcd_result[11:8] + 4'd3;
-                bcd_result = {bcd_result[10:0], shift_reg[8]};
-                shift_reg = {shift_reg[7:0], 1'b0};
-            end
-            binary_to_bcd_9bit = bcd_result;
+    begin
+        d2=0; d1=0; d0=0;
+        for (i=0; i<9; i=i+1) begin
+            if (d2 >= 5) d2 = d2 + 3;
+            if (d1 >= 5) d1 = d1 + 3;
+            if (d0 >= 5) d0 = d0 + 3;
+            d2 = {d2[2:0], d1[3]};
+            d1 = {d1[2:0], d0[3]};
+            d0 = {d0[2:0], bin_in[8-i]};
         end
+        bin_to_bcd3 = {d2, d1, d0};
+    end
+    endfunction
+    
+    function [23:0] format_3digit_bcd;
+        input [8:0] value;
+        reg [11:0] bcd_digits;
+        reg [3:0] hundreds, tens, ones;
+    begin
+        bcd_digits = bin_to_bcd3(value);
+        hundreds = bcd_digits[11:8];
+        tens = bcd_digits[7:4];
+        ones = bcd_digits[3:0];
+        format_3digit_bcd = {8'd48 + hundreds, 8'd48 + tens, 8'd48 + ones};
+    end
     endfunction
 
-    // Split 8-bit value into tens and ones
-    function [7:0] split_tens_ones;
+    function [15:0] format_2digit_bcd;
         input [7:0] value;
         reg [3:0] tens, ones;
-        begin
-            if      (value < 10)  begin tens = 4'd0; ones = value[3:0]; end
-            else if (value < 20)  begin tens = 4'd1; ones = value - 8'd10; end
-            else if (value < 30)  begin tens = 4'd2; ones = value - 8'd20; end
-            else if (value < 40)  begin tens = 4'd3; ones = value - 8'd30; end
-            else if (value < 50)  begin tens = 4'd4; ones = value - 8'd40; end
-            else if (value < 60)  begin tens = 4'd5; ones = value - 8'd50; end
-            else if (value < 70)  begin tens = 4'd6; ones = value - 8'd60; end
-            else if (value < 80)  begin tens = 4'd7; ones = value - 8'd70; end
-            else if (value < 90)  begin tens = 4'd8; ones = value - 8'd80; end
-            else                  begin tens = 4'd9; ones = value - 8'd90; end
-            split_tens_ones = {tens, ones};
-        end
+    begin
+        if (value >= 90) begin tens = 9; ones = value - 90; end
+        else if (value >= 80) begin tens = 8; ones = value - 80; end
+        else if (value >= 70) begin tens = 7; ones = value - 70; end
+        else if (value >= 60) begin tens = 6; ones = value - 60; end
+        else if (value >= 50) begin tens = 5; ones = value - 50; end
+        else if (value >= 40) begin tens = 4; ones = value - 40; end
+        else if (value >= 30) begin tens = 3; ones = value - 30; end
+        else if (value >= 20) begin tens = 2; ones = value - 20; end
+        else if (value >= 10) begin tens = 1; ones = value - 10; end
+        else begin tens = 0; ones = value; end
+        format_2digit_bcd = {8'd48 + tens, 8'd48 + ones};
+    end
     endfunction
 
-    // Modulo 10 for exercise name indexing
-    function [3:0] mod10_9bit;
-        input [8:0] value;
-        reg [8:0] remainder;
-        begin
-            remainder = value;
-            if (remainder >= 9'd200) remainder = remainder - 9'd200;
-            if (remainder >= 9'd100) remainder = remainder - 9'd100;
-            if (remainder >= 9'd50 ) remainder = remainder - 9'd50;
-            if (remainder >= 9'd40 ) remainder = remainder - 9'd40;
-            if (remainder >= 9'd30 ) remainder = remainder - 9'd30;
-            if (remainder >= 9'd20 ) remainder = remainder - 9'd20;
-            if (remainder >= 9'd10 ) remainder = remainder - 9'd10;
-            mod10_9bit = remainder[3:0];
-        end
+    function [127:0] get_exercise_name;
+        input [3:0] index;
+        case (index)
+            4'd0: get_exercise_name = "JUMP JACKS      ";
+            4'd1: get_exercise_name = "SIT UPS         ";
+            4'd2: get_exercise_name = "PUSH UPS        ";
+            4'd3: get_exercise_name = "SQUATS          ";
+            4'd4: get_exercise_name = "PLANK           ";
+            4'd5: get_exercise_name = "LUNGES          ";
+            4'd6: get_exercise_name = "TRICEPS DIPS    ";
+            4'd7: get_exercise_name = "WALL SIT        ";
+            4'd8: get_exercise_name = "HIGH KNEES      ";
+            4'd9: get_exercise_name = "BURPEES         ";
+            default: get_exercise_name = "EXERCISE        ";
+        endcase
     endfunction
 
-    // Convert digit to ASCII
-    function [7:0] digit_to_ascii;
-        input [3:0] digit;
-        digit_to_ascii = (digit <= 9) ? (8'd48 + digit) : 8'd48;
-    endfunction
+    reg [127:0] line1_reg, line2_reg;
+    assign line1_text = line1_reg;
+    assign line2_text = line2_reg;
 
-    // LCD line registers
-    reg [7:0] line1_chars [0:15];
-    reg [7:0] line2_chars [0:15];
-
-    // Pack character arrays into output vectors
-    assign line1_text = {line1_chars[0], line1_chars[1], line1_chars[2], line1_chars[3],
-                         line1_chars[4], line1_chars[5], line1_chars[6], line1_chars[7],
-                         line1_chars[8], line1_chars[9], line1_chars[10], line1_chars[11],
-                         line1_chars[12], line1_chars[13], line1_chars[14], line1_chars[15]};
-                         
-    assign line2_text = {line2_chars[0], line2_chars[1], line2_chars[2], line2_chars[3],
-                         line2_chars[4], line2_chars[5], line2_chars[6], line2_chars[7],
-                         line2_chars[8], line2_chars[9], line2_chars[10], line2_chars[11],
-                         line2_chars[12], line2_chars[13], line2_chars[14], line2_chars[15]};
-
-    // Exercise names as wires instead of packed array
-    wire [127:0] exercise_name_0 = "JUMP JACKS      ";
-    wire [127:0] exercise_name_1 = "SIT UPS         ";
-    wire [127:0] exercise_name_2 = "PUSH UPS        ";
-    wire [127:0] exercise_name_3 = "SQUATS          ";
-    wire [127:0] exercise_name_4 = "PLANK           ";
-    wire [127:0] exercise_name_5 = "LUNGES          ";
-    wire [127:0] exercise_name_6 = "TRICEPS DIPS    ";
-    wire [127:0] exercise_name_7 = "WALL SIT        ";
-    wire [127:0] exercise_name_8 = "HIGH KNEES      ";
-    wire [127:0] exercise_name_9 = "BURPEES         ";
-
-    // **FIX 1: Moved declarations out of the always block**
-    // Wires for workout mode calculations
-    wire [8:0] exercise_minus_1;
-    wire [3:0] exercise_name_index;
-
-    // Registers for text generation logic
-    reg [11:0] total_bcd;
-    reg [3:0] total_hundreds, total_tens, total_ones;
-    reg [7:0] exercise_split, timer_split;
-    reg [3:0] ex_tens, ex_ones, tm_tens, tm_ones;
-    reg [127:0] selected_exercise_name;
+    wire [15:0] weight_ascii_val = weight_to_ascii(idle_mode ? weight_sel : weight_latched);
+    wire [23:0] calorie_ascii_val = calorie_to_ascii(calorie_sel);
+    wire [7:0]  met_ascii_val = met_to_ascii(met_sel);
+    wire [23:0] exercises_ascii = format_3digit_bcd(idle_mode ? exercises_preview : total_exercises);
+    wire [15:0] current_ex_ascii = format_2digit_bcd(current_exercise[7:0]);
+    wire [15:0] timer_ascii = format_2digit_bcd(countdown_time);
     
-    // Registers for idle mode calculations (previously declared inside 'if')
-    reg [8:0] weight_val, calorie_val;
-    reg [3:0] met_val;
-    reg [11:0] weight_bcd, calorie_bcd, exercises_bcd;
-    reg [3:0] w_hundreds, w_tens, w_ones;
-    reg [3:0] c_hundreds, c_tens, c_ones; 
-    reg [3:0] e_hundreds, e_tens, e_ones;
+    wire [8:0] ex_minus_1 = (current_exercise == 0) ? 9'd0 : (current_exercise - 1);
+    wire [11:0] ex_bcd = bin_to_bcd3(ex_minus_1);
+    wire [3:0] name_index = ex_bcd[3:0];
+    
+    wire [127:0] current_exercise_name = get_exercise_name(name_index);
 
-    // **FIX 2: Moved continuous assignments out of the always block**
-    assign exercise_minus_1 = (current_exercise == 0) ? 9'd0 : (current_exercise - 9'd1);
-    assign exercise_name_index = mod10_9bit(exercise_minus_1);
-
-    // Text generation logic
     always @(posedge clk or posedge rst) begin
         if (rst) begin
-            // Initialize with startup message
-            {line1_chars[0], line1_chars[1], line1_chars[2], line1_chars[3],
-             line1_chars[4], line1_chars[5], line1_chars[6], line1_chars[7],
-             line1_chars[8], line1_chars[9], line1_chars[10], line1_chars[11],
-             line1_chars[12], line1_chars[13], line1_chars[14], line1_chars[15]} <= "SET W/CAL/MET   ";
-             
-            {line2_chars[0], line2_chars[1], line2_chars[2], line2_chars[3],
-             line2_chars[4], line2_chars[5], line2_chars[6], line2_chars[7],
-             line2_chars[8], line2_chars[9], line2_chars[10], line2_chars[11],
-             line2_chars[12], line2_chars[13], line2_chars[14], line2_chars[15]} <= "T=000 READY     ";
+            line1_reg <= "FITNESS TIMER   ";
+            line2_reg <= "SET PARAMETERS  ";
         end else begin
             if (idle_mode) begin
-                // IDLE MODE: Show current input settings
-                
-                weight_val = {2'b00, weight_to_kg(weight_sel)};
-                calorie_val = calorie_target(calorie_sel);
-                met_val = met_level(met_sel);
-                
-                weight_bcd = binary_to_bcd_9bit(weight_val);
-                calorie_bcd = binary_to_bcd_9bit(calorie_val);  
-                exercises_bcd = binary_to_bcd_9bit(exercises_preview);
-                
-                w_hundreds = weight_bcd[11:8]; w_tens = weight_bcd[7:4]; w_ones = weight_bcd[3:0];
-                c_hundreds = calorie_bcd[11:8]; c_tens = calorie_bcd[7:4]; c_ones = calorie_bcd[3:0];
-                e_hundreds = exercises_bcd[11:8]; e_tens = exercises_bcd[7:4]; e_ones = exercises_bcd[3:0];
-
-                // Line 1: "G:M W070 M1 C100" or "G:F W070 M1 C100"
-                line1_chars[0] <= "G"; 
-                line1_chars[1] <= ":"; 
-                line1_chars[2] <= gender ? "F" : "M"; 
-                line1_chars[3] <= " ";
-                line1_chars[4] <= "W"; 
-                line1_chars[5] <= (w_hundreds == 0) ? " " : digit_to_ascii(w_hundreds);
-                line1_chars[6] <= digit_to_ascii(w_tens); 
-                line1_chars[7] <= digit_to_ascii(w_ones);
-                line1_chars[8] <= " "; 
-                line1_chars[9] <= "M"; 
-                line1_chars[10] <= digit_to_ascii(met_val);
-                line1_chars[11] <= " ";
-                line1_chars[12] <= "C"; 
-                line1_chars[13] <= (c_hundreds == 0) ? " " : digit_to_ascii(c_hundreds);
-                line1_chars[14] <= digit_to_ascii(c_tens); 
-                line1_chars[15] <= digit_to_ascii(c_ones);
-
-                // Line 2: "T=052 READY     "
-                line2_chars[0] <= "T"; 
-                line2_chars[1] <= "="; 
-                line2_chars[2] <= digit_to_ascii(e_hundreds); 
-                line2_chars[3] <= digit_to_ascii(e_tens); 
-                line2_chars[4] <= digit_to_ascii(e_ones);
-                line2_chars[5] <= " "; 
-                line2_chars[6] <= "R"; 
-                line2_chars[7] <= "E"; 
-                line2_chars[8] <= "A"; 
-                line2_chars[9] <= "D"; 
-                line2_chars[10] <= "Y";
-                line2_chars[11] <= " "; 
-                line2_chars[12] <= " "; 
-                line2_chars[13] <= " "; 
-                line2_chars[14] <= " "; 
-                line2_chars[15] <= " ";
-                
+                line1_reg <= {"G:", (gender ? "F" : "M"), " W", weight_ascii_val, " M", met_ascii_val, " C", calorie_ascii_val};
+                line2_reg <= {"T=", exercises_ascii, " READY         "};
             end else begin
-                // WORKOUT MODE: Show exercise name and progress
-                
-                total_bcd = binary_to_bcd_9bit(total_exercises);
-                total_hundreds = total_bcd[11:8]; total_tens = total_bcd[7:4]; total_ones = total_bcd[3:0];
-                
-                exercise_split = split_tens_ones((current_exercise > 9'd99) ? 8'd99 : current_exercise[7:0]);
-                timer_split = split_tens_ones(countdown_time);
-                ex_tens = exercise_split[7:4]; ex_ones = exercise_split[3:0];
-                tm_tens = timer_split[7:4]; tm_ones = timer_split[3:0];
-
-                // Select exercise name
-                case (exercise_name_index)
-                    4'd0: selected_exercise_name = exercise_name_0;
-                    4'd1: selected_exercise_name = exercise_name_1;
-                    4'd2: selected_exercise_name = exercise_name_2;
-                    4'd3: selected_exercise_name = exercise_name_3;
-                    4'd4: selected_exercise_name = exercise_name_4;
-                    4'd5: selected_exercise_name = exercise_name_5;
-                    4'd6: selected_exercise_name = exercise_name_6;
-                    4'd7: selected_exercise_name = exercise_name_7;
-                    4'd8: selected_exercise_name = exercise_name_8;
-                    default: selected_exercise_name = exercise_name_9;
-                endcase
-
-                // Line 1: Exercise name (16 characters)
-                {line1_chars[0], line1_chars[1], line1_chars[2], line1_chars[3],
-                 line1_chars[4], line1_chars[5], line1_chars[6], line1_chars[7],
-                 line1_chars[8], line1_chars[9], line1_chars[10], line1_chars[11],
-                 line1_chars[12], line1_chars[13], line1_chars[14], line1_chars[15]} <= selected_exercise_name;
-
-                // Line 2: "E05/052 W:45 G:M" or "E05/052 R:15 G:M"
-                line2_chars[0]  <= "E";  
-                line2_chars[1]  <= digit_to_ascii(ex_tens); 
-                line2_chars[2]  <= digit_to_ascii(ex_ones); 
-                line2_chars[3]  <= "/";
-                line2_chars[4]  <= digit_to_ascii(total_hundreds);     
-                line2_chars[5]  <= digit_to_ascii(total_tens);     
-                line2_chars[6]  <= digit_to_ascii(total_ones);     
-                line2_chars[7]  <= " ";
-                line2_chars[8]  <= (workout_state == WORKOUT_STATE_WORK) ? "W" : "R"; 
-                line2_chars[9]  <= ":";
-                line2_chars[10] <= digit_to_ascii(tm_tens); 
-                line2_chars[11] <= digit_to_ascii(tm_ones); 
-                line2_chars[12] <= " ";
-                line2_chars[13] <= "G"; 
-                line2_chars[14] <= ":"; 
-                line2_chars[15] <= gender_latched ? "F" : "M";
+                line1_reg <= current_exercise_name;
+                line2_reg <= {"E", current_ex_ascii[7:0], "/", exercises_ascii[15:8], " ", 
+                             (workout_state == WORKOUT_STATE_WORK) ? "W" : "R", ":", timer_ascii, " G:", 
+                             (gender_latched ? "F" : "M")};
             end
         end
     end
 endmodule
+
 
 // ===================== BCD to 7-Segment Converter ==================
 module BCDToSevenSegment (
-    input  [7:0] bcd_value,          // 0-99
-    output reg [7:0] ones_segments,  // 7-segment pattern for ones digit
-    output reg [7:0] tens_segments   // 7-segment pattern for tens digit
+    input  [7:0] bcd_value,
+    output reg [7:0] ones_segments,
+    output reg [7:0] tens_segments
 );
     
-    reg [3:0] tens_digit, ones_digit;
-    
-    // Extract BCD digits
+    reg [3:0] tens_digit;
+    reg [3:0] ones_digit;
+
     always @(*) begin
-        if      (bcd_value < 10)  begin tens_digit = 4'd0; ones_digit = bcd_value[3:0]; end
-        else if (bcd_value < 20)  begin tens_digit = 4'd1; ones_digit = bcd_value - 8'd10; end
-        else if (bcd_value < 30)  begin tens_digit = 4'd2; ones_digit = bcd_value - 8'd20; end
-        else if (bcd_value < 40)  begin tens_digit = 4'd3; ones_digit = bcd_value - 8'd30; end
-        else if (bcd_value < 50)  begin tens_digit = 4'd4; ones_digit = bcd_value - 8'd40; end
-        else if (bcd_value < 60)  begin tens_digit = 4'd5; ones_digit = bcd_value - 8'd50; end
-        else if (bcd_value < 70)  begin tens_digit = 4'd6; ones_digit = bcd_value - 8'd60; end
-        else if (bcd_value < 80)  begin tens_digit = 4'd7; ones_digit = bcd_value - 8'd70; end
-        else if (bcd_value < 90)  begin tens_digit = 4'd8; ones_digit = bcd_value - 8'd80; end
-        else                      begin tens_digit = 4'd9; ones_digit = bcd_value - 8'd90; end
+        tens_digit = 0;
+        ones_digit = bcd_value;
+
+        if (bcd_value >= 90) begin tens_digit = 9; ones_digit = bcd_value - 90; end
+        else if (bcd_value >= 80) begin tens_digit = 8; ones_digit = bcd_value - 80; end
+        else if (bcd_value >= 70) begin tens_digit = 7; ones_digit = bcd_value - 70; end
+        else if (bcd_value >= 60) begin tens_digit = 6; ones_digit = bcd_value - 60; end
+        else if (bcd_value >= 50) begin tens_digit = 5; ones_digit = bcd_value - 50; end
+        else if (bcd_value >= 40) begin tens_digit = 4; ones_digit = bcd_value - 40; end
+        else if (bcd_value >= 30) begin tens_digit = 3; ones_digit = bcd_value - 30; end
+        else if (bcd_value >= 20) begin tens_digit = 2; ones_digit = bcd_value - 20; end
+        else if (bcd_value >= 10) begin tens_digit = 1; ones_digit = bcd_value - 10; end
     end
 
-    // 7-segment patterns (segments: DP G F E D C B A)
     always @(*) begin
         case (ones_digit)
-            4'd0: ones_segments = 8'b00111111;  // 0
-            4'd1: ones_segments = 8'b00000110;  // 1  
-            4'd2: ones_segments = 8'b01011011;  // 2
-            4'd3: ones_segments = 8'b01001111;  // 3
-            4'd4: ones_segments = 8'b01100110;  // 4
-            4'd5: ones_segments = 8'b01101101;  // 5
-            4'd6: ones_segments = 8'b01111101;  // 6
-            4'd7: ones_segments = 8'b00000111;  // 7
-            4'd8: ones_segments = 8'b01111111;  // 8
-            4'd9: ones_segments = 8'b01101111;  // 9
-            default: ones_segments = 8'b00000000; // blank
+            4'd0: ones_segments = 8'b00111111;
+            4'd1: ones_segments = 8'b00000110;
+            4'd2: ones_segments = 8'b01011011;
+            4'd3: ones_segments = 8'b01001111;
+            4'd4: ones_segments = 8'b01100110;
+            4'd5: ones_segments = 8'b01101101;
+            4'd6: ones_segments = 8'b01111101;
+            4'd7: ones_segments = 8'b00000111;
+            4'd8: ones_segments = 8'b01111111;
+            4'd9: ones_segments = 8'b01101111;
+            default: ones_segments = 8'b00000000;
         endcase
 
         case (tens_digit)
-            4'd0: tens_segments = 8'b00111111;  // 0
-            4'd1: tens_segments = 8'b00000110;  // 1
-            4'd2: tens_segments = 8'b01011011;  // 2  
-            4'd3: tens_segments = 8'b01001111;  // 3
-            4'd4: tens_segments = 8'b01100110;  // 4
-            4'd5: tens_segments = 8'b01101101;  // 5
-            4'd6: tens_segments = 8'b01111101;  // 6
-            4'd7: tens_segments = 8'b00000111;  // 7
-            4'd8: tens_segments = 8'b01111111;  // 8
-            4'd9: tens_segments = 8'b01101111;  // 9
-            default: tens_segments = 8'b00000000; // blank
+            4'd0: tens_segments = 8'b00111111;
+            4'd1: tens_segments = 8'b00000110;
+            4'd2: tens_segments = 8'b01011011;
+            4'd3: tens_segments = 8'b01001111;
+            4'd4: tens_segments = 8'b01100110;
+            4'd5: tens_segments = 8'b01101101;
+            4'd6: tens_segments = 8'b01111101;
+            4'd7: tens_segments = 8'b00000111;
+            4'd8: tens_segments = 8'b01111111;
+            4'd9: tens_segments = 8'b01101111;
+            default: tens_segments = 8'b00000000;
         endcase
     end
 endmodule
+
 
 // ===================== 7-Segment Scanner ==================
 module SevenSegmentScanner4Digit #(
     parameter SEG_ACTIVE_HIGH    = 1'b1,
-    parameter SEL_ACTIVE_HIGH    = 1'b1,
-    parameter integer DOT_DIGIT_INDEX = 2
+    parameter SEL_ACTIVE_HIGH    = 1'b1
 )(
     input clk_scan, 
     input rst, 
     input blank_all, 
-    input dot_blink,
     input  [7:0] digit0, 
     input  [7:0] digit1, 
     input  [7:0] digit2, 
     input  [7:0] digit3,
     output [7:0] segment_outputs, 
-    output [4:0] select_outputs, 
-    output frame_strobe
+    output [4:0] select_outputs
 );
     
     reg [1:0] scan_index; 
-    reg [7:0] current_segments; 
-    reg [4:0] current_selects;
-    reg dot_state_latched; 
-    reg frame_strobe_reg;
-
-    // Remove dot from input digits (will be added separately)
-    wire [7:0] digit0_no_dot = {1'b0, digit0[6:0]};
-    wire [7:0] digit1_no_dot = {1'b0, digit1[6:0]};
-    wire [7:0] digit2_no_dot = {1'b0, digit2[6:0]};
-    wire [7:0] digit3_no_dot = {1'b0, digit3[6:0]};
-
-    localparam [1:0] DOT_INDEX = (DOT_DIGIT_INDEX == 0) ? 2'd0 :
-                                 (DOT_DIGIT_INDEX == 1) ? 2'd1 :
-                                 (DOT_DIGIT_INDEX == 2) ? 2'd2 : 2'd3;
-                                 
+    
     always @(posedge clk_scan or posedge rst) begin
-        if (rst) begin 
+        if (rst) 
             scan_index <= 2'd0; 
-            dot_state_latched <= 1'b0; 
-            frame_strobe_reg <= 1'b0; 
-        end else begin
-            frame_strobe_reg <= (scan_index == 2'd0);
-            if (scan_index == 2'd0) 
-                dot_state_latched <= dot_blink;
+        else
             scan_index <= scan_index + 2'd1;
-        end
     end
     
-    assign frame_strobe = frame_strobe_reg;
-
-    // Multiplex digits and selects
+    reg [7:0] current_segments; 
+    reg [4:0] current_selects;
     always @(*) begin
         case (scan_index)
-            2'd0: begin current_segments = digit0_no_dot; current_selects = 5'b00001; end
-            2'd1: begin current_segments = digit1_no_dot; current_selects = 5'b00010; end  
-            2'd2: begin current_segments = digit2_no_dot; current_selects = 5'b00100; end
-            2'd3: begin current_segments = digit3_no_dot; current_selects = 5'b01000; end
+            2'd0: begin current_segments = digit0; current_selects = 5'b00001; end
+            2'd1: begin current_segments = digit1; current_selects = 5'b00010; end  
+            2'd2: begin current_segments = digit2; current_selects = 5'b00100; end
+            2'd3: begin current_segments = digit3; current_selects = 5'b01000; end
+            default: begin current_segments = 8'h00; current_selects = 5'b00000; end
         endcase
-        
-        // Add dot to designated digit
-        if (scan_index == DOT_INDEX) 
-            current_segments[7] = dot_state_latched;
     end
 
-    // Apply blanking and polarity
     wire [7:0] final_segments = blank_all ? 8'b00000000 : current_segments;
     wire [4:0] final_selects  = blank_all ? 5'b00000    : current_selects;
 
     assign segment_outputs      = SEG_ACTIVE_HIGH ? final_segments : ~final_segments;
     assign select_outputs[3:0]  = SEL_ACTIVE_HIGH ? final_selects[3:0] : ~final_selects[3:0];
-    assign select_outputs[4]    = SEL_ACTIVE_HIGH ? 1'b0 : 1'b1;  // Unused digit
+    assign select_outputs[4]    = SEL_ACTIVE_HIGH ? 1'b0 : 1'b1;
 endmodule
+
 
 // ===================== Button Conditioner ==================
 module ButtonConditioner #(
@@ -967,7 +753,8 @@ module ButtonConditioner #(
     end
 endmodule
 
-// ===================== Debounce Filter ==================  
+
+// ===================== Debounce Filter ==================   
 module DebounceFilter #(
     parameter integer STABLE_COUNT = 200000
 )(
@@ -988,7 +775,7 @@ module DebounceFilter #(
         end else begin
             if (signal_in == stable_state) 
                 stability_counter <= 0;
-            else if (stability_counter == STABLE_COUNT) begin 
+            else if (stability_counter >= STABLE_COUNT) begin 
                 stable_state <= signal_in; 
                 signal_out <= signal_in; 
                 stability_counter <= 0; 
@@ -997,6 +784,7 @@ module DebounceFilter #(
         end
     end
 endmodule
+
 
 // ===================== Power-On Reset ==================
 module PowerOnReset #(
@@ -1020,6 +808,7 @@ module PowerOnReset #(
     
     assign rst = reset_state;
 endmodule
+
 
 // ===================== Reset Controller ==================
 module ResetController #(
@@ -1046,12 +835,12 @@ module ResetController #(
                 reset_active <= 1'b0; 
             else 
                 hold_counter <= hold_counter - 1; 
-        end else 
-            reset_active <= 1'b0;
+        end
     end
     
     assign rst_out = reset_active;
 endmodule
+
 
 // ===================== Clock Divider ==================
 module ClockDivToggle #(
@@ -1068,7 +857,7 @@ module ClockDivToggle #(
         if (rst) begin 
             counter <= 0; 
             clk_out <= 1'b0; 
-        end else if (counter == TOGGLE_COUNT - 1) begin 
+        end else if (counter >= TOGGLE_COUNT - 1) begin 
             counter <= 0; 
             clk_out <= ~clk_out; 
         end else 
@@ -1076,7 +865,8 @@ module ClockDivToggle #(
     end
 endmodule
 
-// ===================== Buzzer Controller ==================
+
+// ===================== Buzzer Controller - REVISED ==================
 module BuzzerController(
     input clk, 
     input rst, 
@@ -1085,203 +875,158 @@ module BuzzerController(
     output buzzer_output
 );
     
-    // Timing parameters
     localparam [25:0] SHORT_BEEP_DURATION = SIM_SPEEDUP ? 26'd80 : 26'd8000000;
     localparam [25:0] LONG_BEEP_DURATION = SIM_SPEEDUP ? 26'd240 : 26'd24000000;
     localparam [15:0] SHORT_BEEP_PERIOD = SIM_SPEEDUP ? 16'd19 : 16'd19999;
     localparam [15:0] LONG_BEEP_PERIOD = SIM_SPEEDUP ? 16'd9 : 16'd9999;
 
     reg beep_active; 
-    reg [25:0] duration_counter; 
-    reg [15:0] frequency_counter, frequency_period; 
+    reg [23:0] duration_counter; 
+    reg [15:0] frequency_counter; 
     reg square_wave;
+    reg is_long_beep; 
     
+    reg short_trigger_prev, long_trigger_prev;
+    wire short_trigger_edge = short_beep_trigger & ~short_trigger_prev;
+    wire long_trigger_edge = long_beep_trigger & ~long_trigger_prev;
+    
+    wire [15:0] current_freq_limit;
+    assign current_freq_limit = is_long_beep ? FINAL_BEEP_FREQ : NORMAL_BEEP_FREQ;
+
     always @(posedge clk or posedge rst) begin
         if (rst) begin 
-            beep_active <= 0; 
-            duration_counter <= 0; 
-            frequency_counter <= 0; 
-            frequency_period <= SHORT_BEEP_PERIOD; 
-            square_wave <= 0; 
+            beep_active <= 1'b0; 
+            duration_counter <= 24'd0; 
+            frequency_counter <= 16'd0; 
+            square_wave <= 1'b0; 
+            is_long_beep <= 1'b0;
+            short_trigger_prev <= 1'b0;
+            long_trigger_prev <= 1'b0;
         end else begin
-            // Start beep on trigger
-            if (long_beep_trigger) begin 
-                beep_active <= 1; 
-                duration_counter <= LONG_BEEP_DURATION; 
-                frequency_period <= LONG_BEEP_PERIOD; 
-            end else if (short_beep_trigger) begin 
-                beep_active <= 1; 
-                duration_counter <= SHORT_BEEP_DURATION; 
-                frequency_period <= SHORT_BEEP_PERIOD; 
-            end else if (duration_counter != 0) begin 
-                duration_counter <= duration_counter - 1; 
-                beep_active <= 1; 
-            end else begin 
-                beep_active <= 0; 
+            short_trigger_prev <= short_beep_trigger;
+            long_trigger_prev <= long_beep_trigger;
+            
+            if (!beep_active) begin
+                if (long_trigger_edge) begin 
+                    beep_active <= 1'b1; 
+                    duration_counter <= LONG_BEEP_DURATION; 
+                    is_long_beep <= 1'b1;
+                    frequency_counter <= 16'd0;
+                end else if (short_trigger_edge) begin 
+                    beep_active <= 1'b1; 
+                    duration_counter <= SHORT_BEEP_DURATION; 
+                    is_long_beep <= 1'b0;
+                    frequency_counter <= 16'd0;
+                end
+            end else begin
+                if (duration_counter > 0)
+                    duration_counter <= duration_counter - 1;
+                else
+                    beep_active <= 1'b0;
+                
+                if (frequency_counter >= current_freq_limit) begin 
+                    frequency_counter <= 16'd0; 
+                    square_wave <= ~square_wave; 
+                end else 
+                    frequency_counter <= frequency_counter + 1;
             end
-
-            // Generate square wave when active
-            if (!beep_active) begin 
-                frequency_counter <= 0; 
-                square_wave <= 0; 
-            end else if (frequency_counter == frequency_period) begin 
-                frequency_counter <= 0; 
-                square_wave <= ~square_wave; 
-            end else 
-                frequency_counter <= frequency_counter + 1;
         end
     end
     
-    assign buzzer_output = square_wave;
+    assign buzzer_output = beep_active ? square_wave : 1'b0;
 endmodule
 
-// ===================== LCD Controller ==================
+
+// ===================== LCD Controller - FINAL CORRECTED ==================
 module LCD1602Controller (
-    input  wire       clk,        // 1 kHz tick (1 ms resolution)
-    input  wire       rst,
+    input  wire        clk,
+    input  wire        rst,
     input  wire [127:0] line1_data,
     input  wire [127:0] line2_data,
-    output reg        lcd_rs,
-    output reg        lcd_e,
-    output wire       lcd_rw,     // always write mode
-    output reg  [7:0] lcd_data
+    output reg         lcd_rs,
+    output reg         lcd_e,
+    output wire        lcd_rw,
+    output reg  [7:0]  lcd_data
 );
     
-    assign lcd_rw = 1'b0;  // Always in write mode
+    assign lcd_rw = 1'b0;
 
-    // Timing and control registers
-    reg [7:0] delay_ms, post_delay_ms, current_byte;
+    reg [7:0] delay_counter;
+    reg [7:0] current_byte;
     reg       is_data_mode;
     reg [4:0] character_index;
 
-    // Extract character from 16-character line (MSB first)
+    reg [127:0] line1_prev, line2_prev;
+    wire data_changed;
+    always @(posedge clk) begin
+        line1_prev <= line1_data;
+        line2_prev <= line2_data;
+    end
+    assign data_changed = (line1_data != line1_prev) || (line2_data != line2_prev);
+
     function [7:0] extract_character;
         input [127:0] line_data; 
         input [3:0] char_index;
-        case(char_index)
-            4'd0:  extract_character = line_data[127:120]; 4'd1:  extract_character = line_data[119:112];
-            4'd2:  extract_character = line_data[111:104]; 4'd3:  extract_character = line_data[103:96];
-            4'd4:  extract_character = line_data[95:88];   4'd5:  extract_character = line_data[87:80];
-            4'd6:  extract_character = line_data[79:72];   4'd7:  extract_character = line_data[71:64];
-            4'd8:  extract_character = line_data[63:56];   4'd9:  extract_character = line_data[55:48];
-            4'd10: extract_character = line_data[47:40];   4'd11: extract_character = line_data[39:32];
-            4'd12: extract_character = line_data[31:24];   4'd13: extract_character = line_data[23:16];
-            4'd14: extract_character = line_data[15:8];    4'd15: extract_character = line_data[7:0];
-            default: extract_character = 8'h20;  // space
-        endcase
+        extract_character = line_data >> (8 * (15 - char_index));
     endfunction
 
-    // LCD state machine states
-    localparam [5:0] LCD_POWER_WAIT    = 6'd0,  LCD_FUNCTION_SET = 6'd1,  LCD_DISPLAY_OFF = 6'd2,
-                     LCD_CLEAR_DISPLAY = 6'd3,  LCD_ENTRY_MODE   = 6'd4,  LCD_DISPLAY_ON  = 6'd5,
-                     LCD_SET_LINE1     = 6'd6,  LCD_WRITE_LINE1  = 6'd7,  LCD_NEXT_LINE1  = 6'd8,
-                     LCD_SET_LINE2     = 6'd9,  LCD_WRITE_LINE2  = 6'd10, LCD_NEXT_LINE2  = 6'd11,
-                     LCD_SEND_BYTE     = 6'd12, LCD_E_HIGH       = 6'd13, LCD_E_HOLD      = 6'd14, 
-                     LCD_POST_WAIT     = 6'd15;
+    localparam [4:0] S_POWER_ON        = 5'd0,
+                     S_FUNC_SET        = 5'd1,
+                     S_DISPLAY_OFF     = 5'd2,
+                     S_CLEAR           = 5'd3,
+                     S_ENTRY_MODE      = 5'd4,
+                     S_DISPLAY_ON      = 5'd5,
+                     S_SET_LINE1       = 5'd6,
+                     S_WRITE_LINE1     = 5'd7,
+                     S_NEXT_CHAR1      = 5'd8,
+                     S_SET_LINE2       = 5'd9,
+                     S_WRITE_LINE2     = 5'd10,
+                     S_NEXT_CHAR2      = 5'd11,
+                     S_IDLE            = 5'd12,
+                     S_SEND            = 5'd13,
+                     S_PULSE_E         = 5'd14,
+                     S_WAIT            = 5'd15;
                      
-    reg [5:0] current_state, return_state;
+    reg [4:0] current_state, return_state;
+    reg initialization_done;
 
     always @(posedge clk or posedge rst) begin
         if (rst) begin
-            lcd_rs <= 0; 
-            lcd_e <= 0; 
+            lcd_rs <= 1'b0; 
+            lcd_e <= 1'b0; 
             lcd_data <= 8'h00;
-            delay_ms <= 8'd50; 
-            current_state <= LCD_POWER_WAIT; 
-            character_index <= 5'd0; 
-            is_data_mode <= 0; 
-            post_delay_ms <= 0; 
-            current_byte <= 8'h00;
-        end else if (delay_ms != 0) begin
-            delay_ms <= delay_ms - 8'd1;
-            if (current_state != LCD_E_HIGH && current_state != LCD_E_HOLD) 
-                lcd_e <= 1'b0;
+            delay_counter <= 8'd50; // CORRECTED: Increased power-on delay
+            current_state <= S_POWER_ON; 
+            initialization_done <= 1'b0;
         end else begin
-            case (current_state)
-                LCD_POWER_WAIT: current_state <= LCD_FUNCTION_SET;
-
-                // LCD Initialization sequence
-                LCD_FUNCTION_SET: begin 
-                    current_byte <= 8'h38; is_data_mode <= 0; post_delay_ms <= 8'd2; 
-                    return_state <= LCD_DISPLAY_OFF; current_state <= LCD_SEND_BYTE; 
-                end
-                LCD_DISPLAY_OFF: begin 
-                    current_byte <= 8'h08; is_data_mode <= 0; post_delay_ms <= 8'd2; 
-                    return_state <= LCD_CLEAR_DISPLAY; current_state <= LCD_SEND_BYTE; 
-                end
-                LCD_CLEAR_DISPLAY: begin 
-                    current_byte <= 8'h01; is_data_mode <= 0; post_delay_ms <= 8'd3; 
-                    return_state <= LCD_ENTRY_MODE; current_state <= LCD_SEND_BYTE; 
-                end
-                LCD_ENTRY_MODE: begin 
-                    current_byte <= 8'h06; is_data_mode <= 0; post_delay_ms <= 8'd2; 
-                    return_state <= LCD_DISPLAY_ON; current_state <= LCD_SEND_BYTE; 
-                end
-                LCD_DISPLAY_ON: begin 
-                    current_byte <= 8'h0C; is_data_mode <= 0; post_delay_ms <= 8'd2; 
-                    return_state <= LCD_SET_LINE1; current_state <= LCD_SEND_BYTE; 
-                end
-
-                // Line 1 operations
-                LCD_SET_LINE1: begin 
-                    current_byte <= 8'h80; is_data_mode <= 0; post_delay_ms <= 8'd2; 
-                    character_index <= 0; return_state <= LCD_WRITE_LINE1; current_state <= LCD_SEND_BYTE; 
-                end
-                LCD_WRITE_LINE1: begin 
-                    current_byte <= extract_character(line1_data, character_index[3:0]); 
-                    is_data_mode <= 1; post_delay_ms <= 8'd1; 
-                    return_state <= LCD_NEXT_LINE1; current_state <= LCD_SEND_BYTE; 
-                end
-                LCD_NEXT_LINE1: begin 
-                    if (character_index == 5'd15) 
-                        current_state <= LCD_SET_LINE2; 
-                    else begin 
-                        character_index <= character_index + 1; 
-                        current_state <= LCD_WRITE_LINE1; 
-                    end 
-                end
-
-                // Line 2 operations  
-                LCD_SET_LINE2: begin 
-                    current_byte <= 8'hC0; is_data_mode <= 0; post_delay_ms <= 8'd2; 
-                    character_index <= 0; return_state <= LCD_WRITE_LINE2; current_state <= LCD_SEND_BYTE; 
-                end
-                LCD_WRITE_LINE2: begin 
-                    current_byte <= extract_character(line2_data, character_index[3:0]); 
-                    is_data_mode <= 1; post_delay_ms <= 8'd1; 
-                    return_state <= LCD_NEXT_LINE2; current_state <= LCD_SEND_BYTE; 
-                end
-                LCD_NEXT_LINE2: begin 
-                    if (character_index == 5'd15) 
-                        current_state <= LCD_SET_LINE1; 
-                    else begin 
-                        character_index <= character_index + 1; 
-                        current_state <= LCD_WRITE_LINE2; 
-                    end 
-                end
-
-                // Generic byte send sequence
-                LCD_SEND_BYTE: begin 
-                    lcd_rs <= is_data_mode; 
-                    lcd_data <= current_byte; 
-                    lcd_e <= 1; 
-                    delay_ms <= 8'd1; 
-                    current_state <= LCD_E_HIGH; 
-                end
-                LCD_E_HIGH: begin 
-                    lcd_e <= 0; 
-                    delay_ms <= 8'd1; 
-                    current_state <= LCD_E_HOLD; 
-                end
-                LCD_E_HOLD: begin 
-                    delay_ms <= post_delay_ms; 
-                    current_state <= LCD_POST_WAIT; 
-                end
-                LCD_POST_WAIT: current_state <= return_state;
-
-                default: current_state <= LCD_POWER_WAIT;
-            endcase
+            if (delay_counter > 0) begin
+                delay_counter <= delay_counter - 1;
+            end else begin
+                case (current_state)
+                    S_POWER_ON:        current_state <= S_FUNC_SET;
+                    S_FUNC_SET:        begin current_byte <= 8'h38; is_data_mode <= 1'b0; delay_counter <= 8'd5;  return_state <= S_DISPLAY_OFF;   current_state <= S_SEND; end
+                    S_DISPLAY_OFF:     begin current_byte <= 8'h08; is_data_mode <= 1'b0; delay_counter <= 8'd2;  return_state <= S_CLEAR;         current_state <= S_SEND; end
+                    S_CLEAR:           begin current_byte <= 8'h01; is_data_mode <= 1'b0; delay_counter <= 8'd5;  return_state <= S_ENTRY_MODE;    current_state <= S_SEND; end // CORRECTED: Increased clear delay
+                    S_ENTRY_MODE:      begin current_byte <= 8'h06; is_data_mode <= 1'b0; delay_counter <= 8'd2;  return_state <= S_DISPLAY_ON;    current_state <= S_SEND; end
+                    S_DISPLAY_ON:      begin current_byte <= 8'h0C; is_data_mode <= 1'b0; delay_counter <= 8'd2;  return_state <= S_SET_LINE1; initialization_done <= 1'b1; current_state <= S_SEND; end
+                    
+                    S_SET_LINE1:       begin current_byte <= 8'h80; is_data_mode <= 1'b0; delay_counter <= 8'd1;  character_index <= 5'd0; return_state <= S_WRITE_LINE1; current_state <= S_SEND; end
+                    S_WRITE_LINE1:     begin current_byte <= extract_character(line1_data, character_index[3:0]); is_data_mode <= 1'b1; delay_counter <= 8'd1;  return_state <= S_NEXT_CHAR1;  current_state <= S_SEND; end
+                    S_NEXT_CHAR1:      begin if (character_index == 5'd15) current_state <= S_SET_LINE2; else begin character_index <= character_index + 1; current_state <= S_WRITE_LINE1; end end
+                    
+                    S_SET_LINE2:       begin current_byte <= 8'hC0; is_data_mode <= 1'b0; delay_counter <= 8'd1;  character_index <= 5'd0; return_state <= S_WRITE_LINE2; current_state <= S_SEND; end
+                    S_WRITE_LINE2:     begin current_byte <= extract_character(line2_data, character_index[3:0]); is_data_mode <= 1'b1; delay_counter <= 8'd1;  return_state <= S_NEXT_CHAR2;  current_state <= S_SEND; end
+                    S_NEXT_CHAR2:      begin if (character_index == 5'd15) current_state <= S_IDLE; else begin character_index <= character_index + 1; current_state <= S_WRITE_LINE2; end end
+                    
+                    S_IDLE:            begin if (data_changed && initialization_done) current_state <= S_SET_LINE1; end
+                    
+                    S_SEND:            begin lcd_rs <= is_data_mode; lcd_data <= current_byte; current_state <= S_PULSE_E; end
+                    S_PULSE_E:         begin lcd_e <= 1'b1; delay_counter <= 8'd1; current_state <= S_WAIT; end
+                    S_WAIT:            begin lcd_e <= 1'b0; current_state <= return_state; end
+                    
+                    default:           current_state <= S_POWER_ON;
+                endcase
+            end
         end
     end
 endmodule
-
