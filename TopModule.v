@@ -157,6 +157,7 @@ module TopModule #(
     end
 
     // ============ WORKOUT STATE MACHINE (5-STATE VERSION) ============
+
     wire [8:0] current_exercise_num;
     wire [7:0] countdown_seconds;
     wire beep_after_rest_pulse, workout_finished_pulse;
@@ -874,10 +875,10 @@ module BuzzerController(
     output buzzer_output
 );
     
-    localparam [23:0] SHORT_BEEP_DURATION = 24'd4000000;
-    localparam [23:0] LONG_BEEP_DURATION  = 24'd20000000;
-    localparam [15:0] NORMAL_BEEP_FREQ  = 16'd45454;
-    localparam [15:0] FINAL_BEEP_FREQ   = 16'd75835;
+    localparam [25:0] SHORT_BEEP_DURATION = SIM_SPEEDUP ? 26'd80 : 26'd8000000;
+    localparam [25:0] LONG_BEEP_DURATION = SIM_SPEEDUP ? 26'd240 : 26'd24000000;
+    localparam [15:0] SHORT_BEEP_PERIOD = SIM_SPEEDUP ? 16'd19 : 16'd19999;
+    localparam [15:0] LONG_BEEP_PERIOD = SIM_SPEEDUP ? 16'd9 : 16'd9999;
 
     reg beep_active; 
     reg [23:0] duration_counter; 
