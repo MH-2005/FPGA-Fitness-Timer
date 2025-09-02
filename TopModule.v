@@ -489,22 +489,28 @@ module LCDTextGenerator (
     
     localparam [1:0] WORKOUT_STATE_WORK = 2'b01;
 
-    function [15:0] weight_to_ascii;
+    function [23:0] weight_to_ascii;
         input [2:0] sel;
         case (sel)
-            3'b000: weight_to_ascii = "50";   3'b001: weight_to_ascii = "60";
-            3'b010: weight_to_ascii = "70";   3'b011: weight_to_ascii = "80";
-            3'b100: weight_to_ascii = "90";   3'b101: weight_to_ascii = "100";
-            3'b110: weight_to_ascii = "110";  3'b111: weight_to_ascii = "120";
-            default: weight_to_ascii = "70";
+            3'b000: weight_to_ascii = " 50"; 
+            3'b001: weight_to_ascii = " 60";
+            3'b010: weight_to_ascii = " 70";
+            3'b011: weight_to_ascii = " 80";
+            3'b100: weight_to_ascii = " 90";
+            3'b101: weight_to_ascii = "100";   
+            3'b110: weight_to_ascii = "110";
+            3'b111: weight_to_ascii = "120";
+            default: weight_to_ascii = " 70";
         endcase
     endfunction
 
     function [23:0] calorie_to_ascii;
         input [1:0] sel;
         case (sel)
-            2'b00: calorie_to_ascii = " 50";   2'b01: calorie_to_ascii = "100";
-            2'b10: calorie_to_ascii = "150";   2'b11: calorie_to_ascii = "200";
+            2'b00: calorie_to_ascii = " 50";
+            2'b01: calorie_to_ascii = "100";
+            2'b10: calorie_to_ascii = "150";
+            2'b11: calorie_to_ascii = "200";
             default: calorie_to_ascii = "100";
         endcase
     endfunction
@@ -512,8 +518,10 @@ module LCDTextGenerator (
     function [7:0] met_to_ascii;
         input [1:0] sel;
         case (sel) 
-            2'b00: met_to_ascii = "1";  2'b01: met_to_ascii = "2"; 
-            2'b10: met_to_ascii = "4";  2'b11: met_to_ascii = "8";
+            2'b00: met_to_ascii = "1";
+            2'b01: met_to_ascii = "2"; 
+            2'b10: met_to_ascii = "4";
+            2'b11: met_to_ascii = "8";
             default: met_to_ascii = "1";
         endcase
     endfunction
@@ -545,7 +553,11 @@ module LCDTextGenerator (
         hundreds = bcd_digits[11:8];
         tens = bcd_digits[7:4];
         ones = bcd_digits[3:0];
-        format_3digit_bcd = {8'd48 + hundreds, 8'd48 + tens, 8'd48 + ones};
+        
+        if (hundreds == 0)
+            format_3digit_bcd = {" ", 8'd48 + tens, 8'd48 + ones};
+        else
+            format_3digit_bcd = {8'd48 + hundreds, 8'd48 + tens, 8'd48 + ones};
     end
     endfunction
 
@@ -588,7 +600,7 @@ module LCDTextGenerator (
     assign line1_text = line1_reg;
     assign line2_text = line2_reg;
 
-    wire [15:0] weight_ascii_val = weight_to_ascii(idle_mode ? weight_sel : weight_latched);
+    wire [23:0] weight_ascii_val = weight_to_ascii(idle_mode ? weight_sel : weight_latched);
     wire [23:0] calorie_ascii_val = calorie_to_ascii(calorie_sel);
     wire [7:0]  met_ascii_val = met_to_ascii(met_sel);
     wire [23:0] exercises_ascii = format_3digit_bcd(idle_mode ? exercises_preview : total_exercises);
@@ -608,12 +620,12 @@ module LCDTextGenerator (
         end else begin
             if (idle_mode) begin
                 line1_reg <= {"G:", (gender ? "F" : "M"), " W", weight_ascii_val, " M", met_ascii_val, " C", calorie_ascii_val};
-                line2_reg <= {"T=", exercises_ascii, " READY         "};
+                line2_reg <= {"T=", exercises_ascii, " READY      "};
             end else begin
                 line1_reg <= current_exercise_name;
-                line2_reg <= {"E", current_ex_ascii[7:0], "/", exercises_ascii[15:8], " ", 
+                line2_reg <= {"E", current_ex_ascii, "/", exercises_ascii, " ", 
                              (workout_state == WORKOUT_STATE_WORK) ? "W" : "R", ":", timer_ascii, " G:", 
-                             (gender_latched ? "F" : "M")};
+                             (gender_latched ? "F" : "M"), " "};
             end
         end
     end
@@ -937,6 +949,7 @@ endmodule
 
 
 // ===================== LCD Controller ==================
+
 module LCD1602Controller (
     input  wire        clk,
     input  wire        rst,
@@ -994,7 +1007,7 @@ module LCD1602Controller (
             lcd_rs <= 1'b0; 
             lcd_e <= 1'b0; 
             lcd_data <= 8'h00;
-            delay_counter <= 8'd200; // CORRECTED: Increased power-on delay
+            delay_counter <= 8'd255;
             current_state <= S_POWER_ON; 
             initialization_done <= 1'b0;
         end else begin
@@ -1003,24 +1016,24 @@ module LCD1602Controller (
             end else begin
                 case (current_state)
                     S_POWER_ON:        current_state <= S_FUNC_SET;
-                    S_FUNC_SET:        begin current_byte <= 8'h38; is_data_mode <= 1'b0; delay_counter <= 8'd5;  return_state <= S_DISPLAY_OFF;   current_state <= S_SEND; end
-                    S_DISPLAY_OFF:     begin current_byte <= 8'h08; is_data_mode <= 1'b0; delay_counter <= 8'd2;  return_state <= S_CLEAR;         current_state <= S_SEND; end
-                    S_CLEAR:           begin current_byte <= 8'h01; is_data_mode <= 1'b0; delay_counter <= 8'd20;  return_state <= S_ENTRY_MODE;    current_state <= S_SEND; end // CORRECTED: Increased clear delay
-                    S_ENTRY_MODE:      begin current_byte <= 8'h06; is_data_mode <= 1'b0; delay_counter <= 8'd2;  return_state <= S_DISPLAY_ON;    current_state <= S_SEND; end
-                    S_DISPLAY_ON:      begin current_byte <= 8'h0C; is_data_mode <= 1'b0; delay_counter <= 8'd2;  return_state <= S_SET_LINE1; initialization_done <= 1'b1; current_state <= S_SEND; end
+                    S_FUNC_SET:        begin current_byte <= 8'h38; is_data_mode <= 1'b0; delay_counter <= 8'd10;  return_state <= S_DISPLAY_OFF;   current_state <= S_SEND; end
+                    S_DISPLAY_OFF:     begin current_byte <= 8'h08; is_data_mode <= 1'b0; delay_counter <= 8'd5;  return_state <= S_CLEAR;         current_state <= S_SEND; end
+                    S_CLEAR:           begin current_byte <= 8'h01; is_data_mode <= 1'b0; delay_counter <= 8'd50;  return_state <= S_ENTRY_MODE;    current_state <= S_SEND; end
+                    S_ENTRY_MODE:      begin current_byte <= 8'h06; is_data_mode <= 1'b0; delay_counter <= 8'd5;  return_state <= S_DISPLAY_ON;    current_state <= S_SEND; end
+                    S_DISPLAY_ON:      begin current_byte <= 8'h0C; is_data_mode <= 1'b0; delay_counter <= 8'd5;  return_state <= S_SET_LINE1; initialization_done <= 1'b1; current_state <= S_SEND; end
                     
-                    S_SET_LINE1:       begin current_byte <= 8'h80; is_data_mode <= 1'b0; delay_counter <= 8'd1;  character_index <= 5'd0; return_state <= S_WRITE_LINE1; current_state <= S_SEND; end
-                    S_WRITE_LINE1:     begin current_byte <= extract_character(line1_data, character_index[3:0]); is_data_mode <= 1'b1; delay_counter <= 8'd1;  return_state <= S_NEXT_CHAR1;  current_state <= S_SEND; end
+                    S_SET_LINE1:       begin current_byte <= 8'h80; is_data_mode <= 1'b0; delay_counter <= 8'd2;  character_index <= 5'd0; return_state <= S_WRITE_LINE1; current_state <= S_SEND; end
+                    S_WRITE_LINE1:     begin current_byte <= extract_character(line1_data, character_index[3:0]); is_data_mode <= 1'b1; delay_counter <= 8'd2;  return_state <= S_NEXT_CHAR1;  current_state <= S_SEND; end
                     S_NEXT_CHAR1:      begin if (character_index == 5'd15) current_state <= S_SET_LINE2; else begin character_index <= character_index + 1; current_state <= S_WRITE_LINE1; end end
                     
-                    S_SET_LINE2:       begin current_byte <= 8'hC0; is_data_mode <= 1'b0; delay_counter <= 8'd1;  character_index <= 5'd0; return_state <= S_WRITE_LINE2; current_state <= S_SEND; end
-                    S_WRITE_LINE2:     begin current_byte <= extract_character(line2_data, character_index[3:0]); is_data_mode <= 1'b1; delay_counter <= 8'd1;  return_state <= S_NEXT_CHAR2;  current_state <= S_SEND; end
+                    S_SET_LINE2:       begin current_byte <= 8'hC0; is_data_mode <= 1'b0; delay_counter <= 8'd2;  character_index <= 5'd0; return_state <= S_WRITE_LINE2; current_state <= S_SEND; end
+                    S_WRITE_LINE2:     begin current_byte <= extract_character(line2_data, character_index[3:0]); is_data_mode <= 1'b1; delay_counter <= 8'd2;  return_state <= S_NEXT_CHAR2;  current_state <= S_SEND; end
                     S_NEXT_CHAR2:      begin if (character_index == 5'd15) current_state <= S_IDLE; else begin character_index <= character_index + 1; current_state <= S_WRITE_LINE2; end end
                     
                     S_IDLE:            begin if (data_changed && initialization_done) current_state <= S_SET_LINE1; end
                     
                     S_SEND:            begin lcd_rs <= is_data_mode; lcd_data <= current_byte; current_state <= S_PULSE_E; end
-                    S_PULSE_E:         begin lcd_e <= 1'b1; delay_counter <= 8'd1; current_state <= S_WAIT; end
+                    S_PULSE_E:         begin lcd_e <= 1'b1; delay_counter <= 8'd2; current_state <= S_WAIT; end
                     S_WAIT:            begin lcd_e <= 1'b0; current_state <= return_state; end
                     
                     default:           current_state <= S_POWER_ON;
