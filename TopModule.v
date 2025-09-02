@@ -936,7 +936,7 @@ module BuzzerController(
 endmodule
 
 
-// ===================== LCD Controller - FINAL CORRECTED ==================
+// ===================== LCD Controller ==================
 module LCD1602Controller (
     input  wire        clk,
     input  wire        rst,
@@ -994,7 +994,7 @@ module LCD1602Controller (
             lcd_rs <= 1'b0; 
             lcd_e <= 1'b0; 
             lcd_data <= 8'h00;
-            delay_counter <= 8'd50; // CORRECTED: Increased power-on delay
+            delay_counter <= 8'd200; // CORRECTED: Increased power-on delay
             current_state <= S_POWER_ON; 
             initialization_done <= 1'b0;
         end else begin
@@ -1005,7 +1005,7 @@ module LCD1602Controller (
                     S_POWER_ON:        current_state <= S_FUNC_SET;
                     S_FUNC_SET:        begin current_byte <= 8'h38; is_data_mode <= 1'b0; delay_counter <= 8'd5;  return_state <= S_DISPLAY_OFF;   current_state <= S_SEND; end
                     S_DISPLAY_OFF:     begin current_byte <= 8'h08; is_data_mode <= 1'b0; delay_counter <= 8'd2;  return_state <= S_CLEAR;         current_state <= S_SEND; end
-                    S_CLEAR:           begin current_byte <= 8'h01; is_data_mode <= 1'b0; delay_counter <= 8'd5;  return_state <= S_ENTRY_MODE;    current_state <= S_SEND; end // CORRECTED: Increased clear delay
+                    S_CLEAR:           begin current_byte <= 8'h01; is_data_mode <= 1'b0; delay_counter <= 8'd20;  return_state <= S_ENTRY_MODE;    current_state <= S_SEND; end // CORRECTED: Increased clear delay
                     S_ENTRY_MODE:      begin current_byte <= 8'h06; is_data_mode <= 1'b0; delay_counter <= 8'd2;  return_state <= S_DISPLAY_ON;    current_state <= S_SEND; end
                     S_DISPLAY_ON:      begin current_byte <= 8'h0C; is_data_mode <= 1'b0; delay_counter <= 8'd2;  return_state <= S_SET_LINE1; initialization_done <= 1'b1; current_state <= S_SEND; end
                     
